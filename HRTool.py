@@ -8,7 +8,7 @@ pandas.read_excelを使用した最適化バージョン
 import pandas as pd
 from pathlib import Path
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import defaultdict
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -33,32 +33,59 @@ logging.basicConfig(
 TARGET_COLUMNS = [
     "社員番号", "氏名", "フリガナ", "生年月日", "性別", "入社年月日",
     "所属コード", "所属名", "資格コード", "資格名", "職位コード", "職位名",
-    "健保コード", "NO", "雇用形態"
+    "健保コード", "NO", "雇用形態", "退職年月日"
 ]
 
-# 列名の同義語マッピング
+# 日付列のリスト
+DATE_COLUMNS = ["生年月日", "入社年月日", "退職年月日"]
+
+# 列名の同義語マッピング（拡張版）
 COLUMN_SYNONYMS = {
-    "社員番号": ["社員番号", "社員No", "社員ＮＯ", "emp_no", "従業員番号"],
-    "氏名": ["氏名", "名前", "社員名", "name"],
-    "フリガナ": ["フリガナ", "カナ", "フリガナ氏名"],
-    "生年月日": ["生年月日", "生年月日（西暦）", "誕生日"],
-    "性別": ["性別", "男女"],
-    "入社年月日": ["入社年月日", "入社日", "入社年月日（西暦）"],
-    "所属コード": ["所属コード", "部署コード", "dept_code"],
-    "所属名": ["所属名", "部署名", "所属"],
-    "資格コード": ["資格コード", "grade_code"],
-    "資格名": ["資格名", "資格"],
-    "職位コード": ["職位コード", "position_code"],
-    "職位名": ["職位名", "職位"],
-    "健保コード": ["健保コード", "health_code"],
-    "NO": ["NO", "No", "番号"],
-    "雇用形態": ["雇用形態", "雇用区分"]
+    "社員番号": ["社員番号", "社員No", "社員NO", "社員ＮＯ", "社員ｎｏ", "emp_no", "従業員番号", "職員番号", "社員コード"],
+    "氏名": ["氏名", "名前", "社員名", "name", "Name", "NAME", "氏　名", "社員氏名", "職員名"],
+    "フリガナ": ["フリガナ", "カナ", "フリガナ氏名", "ふりがな", "フリガナ名", "かな", "カナ氏名"],
+    "生年月日": ["生年月日", "生年月日（西暦）", "誕生日", "生年月日(西暦)", "生まれ", "年月日"],
+    "性別": ["性別", "男女", "性"],
+    "入社年月日": ["入社年月日", "入社日", "入社年月日（西暦）", "入社年月日(西暦)", "入社", "採用日", "入社年月"],
+    "所属コード": ["所属コード", "部署コード", "dept_code", "所属ｺｰﾄﾞ", "部署ｺｰﾄﾞ", "組織コード"],
+    "所属名": ["所属名", "部署名", "所属", "部署", "組織名", "所属部署", "配属先"],
+    "資格コード": ["資格コード", "grade_code", "資格ｺｰﾄﾞ", "等級コード", "等級"],
+    "資格名": ["資格名", "資格", "等級名", "職能資格"],
+    "職位コード": ["職位コード", "position_code", "職位ｺｰﾄﾞ", "役職コード"],
+    "職位名": ["職位名", "職位", "役職名", "役職"],
+    "健保コード": ["健保コード", "health_code", "健保ｺｰﾄﾞ", "保険コード"],
+    "NO": ["NO", "No", "番号", "no", "№", "ＮＯ"],
+    "雇用形態": ["雇用形態", "雇用区分", "雇用", "勤務形態", "就業形態"],
+    "退職年月日": ["退職年月日", "退職日", "退職年月日（西暦）", "退職年月日(西暦)", "退職", "離職日"]
 }
 
 
 def log(message):
     """ログ出力"""
     logging.info(message)
+
+
+def convert_excel_date(value):
+    """Excelの日付値を文字列に変換"""
+    if pd.isna(value) or value == "":
+        return ""
+
+    # 既に日付型の場合
+    if isinstance(value, (pd.Timestamp, datetime)):
+        return value.strftime('%Y/%m/%d')
+
+    # 数値（シリアル値）の場合
+    if isinstance(value, (int, float)):
+        try:
+            # Excelの日付シリアル値を変換
+            base_date = datetime(1899, 12, 30)
+            date_value = base_date + timedelta(days=int(value))
+            return date_value.strftime('%Y/%m/%d')
+        except:
+            return str(value)
+
+    # 文字列の場合はそのまま
+    return str(value)
 
 
 def normalize_column_names(columns):
@@ -154,9 +181,21 @@ def normalize_sheet(df, sheet_name, file_name):
         header = [f"col_{i}" for i in range(len(df.columns))]
         data_df = df.copy()
         data_df.columns = header
+        log(f"  警告: シート '{sheet_name}' でヘッダー行が見つかりません")
     else:
         # ヘッダー行から列名を取得
+        original_header = df.iloc[header_row_idx].tolist()
         header = normalize_column_names(df.iloc[header_row_idx])
+
+        # 認識された列名をログ出力
+        recognized_cols = []
+        for orig, norm in zip(original_header, header):
+            if norm in TARGET_COLUMNS:
+                recognized_cols.append(f"{orig} → {norm}")
+
+        if recognized_cols:
+            log(f"  認識された列: {', '.join(recognized_cols)}")
+
         # データ行はヘッダーの次から
         data_df = df.iloc[header_row_idx + 1:].copy()
         data_df.columns = header
@@ -309,6 +348,9 @@ def build_detail_table(combined, dept_map, qual_map, pos_map):
     log(f"  ユニーク社員数: {len(grouped)}")
 
     result_rows = []
+    missing_data_count = defaultdict(int)  # 欠損データのカウント
+    sample_log_count = 0  # サンプルログ出力用カウンター
+    max_sample_logs = 5   # サンプルログの最大件数
 
     for emp_no, group in grouped:
         # 優先度が最も低い（0に近い）レコードを選択
@@ -316,6 +358,8 @@ def build_detail_table(combined, dept_map, qual_map, pos_map):
 
         # 各列の値を選択（最初の非空値）
         row_data = {"社員番号": emp_no}
+        filled_cols = []  # このレコードで埋まった列
+        empty_cols = []   # このレコードで空の列
 
         for col in TARGET_COLUMNS:
             if col == "社員番号":
@@ -326,11 +370,20 @@ def build_detail_table(combined, dept_map, qual_map, pos_map):
                 values = group[col].dropna()
                 values = values[values.astype(str).str.strip() != ""]
                 if len(values) > 0:
-                    row_data[col] = values.iloc[0]
+                    value = values.iloc[0]
+                    # 日付列の場合は変換
+                    if col in DATE_COLUMNS:
+                        value = convert_excel_date(value)
+                    row_data[col] = value
+                    filled_cols.append(col)
                 else:
                     row_data[col] = ""
+                    empty_cols.append(col)
+                    missing_data_count[col] += 1
             else:
                 row_data[col] = ""
+                empty_cols.append(col)
+                missing_data_count[col] += 1
 
         # マスタマップから名称を補完
         if "所属コード" in row_data and row_data["所属コード"]:
@@ -348,6 +401,17 @@ def build_detail_table(combined, dept_map, qual_map, pos_map):
             if code in pos_map:
                 row_data["職位名"] = pos_map[code]
 
+        # サンプルログ出力（最初の数件のみ）
+        if sample_log_count < max_sample_logs:
+            sources = group["__source__"].unique().tolist()
+            log(f"  社員番号 {emp_no}: {len(group)}レコード集約")
+            log(f"    データソース: {', '.join(sources)}")
+            if filled_cols:
+                log(f"    集約できた列: {', '.join(filled_cols[:5])}{'...' if len(filled_cols) > 5 else ''}")
+            if empty_cols and len(empty_cols) < 10:
+                log(f"    空の列: {', '.join(empty_cols)}")
+            sample_log_count += 1
+
         result_rows.append(row_data)
 
     detail_df = pd.DataFrame(result_rows)
@@ -358,6 +422,14 @@ def build_detail_table(combined, dept_map, qual_map, pos_map):
 
     log(f"  詳細表生成完了: {len(detail_df)}行")
 
+    # データ欠損状況をログ出力
+    if missing_data_count:
+        log("  データ欠損状況:")
+        for col, count in sorted(missing_data_count.items(), key=lambda x: x[1], reverse=True):
+            if count > 0:
+                percentage = (count / len(detail_df)) * 100
+                log(f"    {col}: {count}件 ({percentage:.1f}%)")
+
     return detail_df
 
 
@@ -365,7 +437,7 @@ def extract_master_table(detail_df):
     """マスタ表を抽出"""
     log("マスタ表抽出中")
 
-    master_columns = ["社員番号", "氏名", "フリガナ", "生年月日", "性別", "入社年月日"]
+    master_columns = ["社員番号", "氏名", "フリガナ", "生年月日", "性別", "入社年月日", "退職年月日"]
 
     # 列が存在するかチェック
     existing_cols = [col for col in master_columns if col in detail_df.columns]
@@ -377,10 +449,53 @@ def extract_master_table(detail_df):
     return master_df
 
 
+def extract_retired_employees(detail_df):
+    """退職者を抽出"""
+    log("退職者抽出中")
+
+    if "退職年月日" not in detail_df.columns:
+        log("  退職年月日列が存在しません。退職者シートはスキップします。")
+        return None
+
+    # 退職年月日が空でないレコードを退職者とする
+    retired_df = detail_df[detail_df["退職年月日"].astype(str).str.strip() != ""].copy()
+
+    log(f"  退職者抽出完了: {len(retired_df)}行")
+
+    return retired_df if len(retired_df) > 0 else None
+
+
+def read_existing_master():
+    """outputフォルダから最新の統合ファイルを読み込む"""
+    output_dir = Path("output")
+    if not output_dir.exists():
+        return None
+
+    # 統合ファイル_*.xlsxを探す
+    master_files = sorted(output_dir.glob("統合ファイル_*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+    if not master_files:
+        return None
+
+    latest_master = master_files[0]
+    log(f"既存マスタ読み込み: {latest_master.name}")
+
+    try:
+        # 詳細シートを読み込む
+        df = pd.read_excel(latest_master, sheet_name='詳細')
+        # __source__列を追加
+        df["__source__"] = f"{latest_master.name}/詳細"
+        log(f"  既存マスタ: {len(df)}行")
+        return df
+    except Exception as e:
+        log(f"  エラー: 既存マスタの読み込み失敗: {e}")
+        return None
+
+
 def run_initial_build():
     """初期マスタ作成"""
     log("=========================================")
-    log("=== RunInitialBuild: 初期作成開始 ===")
+    log("=== 新規マスタ作成開始 ===")
     log("=========================================")
 
     # inputフォルダから全ファイルを読み込み
@@ -396,7 +511,7 @@ def run_initial_build():
         return
 
     log(f"選択ファイル数: {len(excel_files)}")
-    log("=== ReadExcelAllSheets: ファイル読み込み開始 ===")
+    log("=== ファイル読み込み開始 ===")
 
     all_dfs = []
     for idx, file_path in enumerate(excel_files, 1):
@@ -404,8 +519,7 @@ def run_initial_build():
         dfs = read_excel_all_sheets(file_path)
         all_dfs.extend(dfs)
 
-    log(f"=== ReadExcelAllSheets: 完了 ({len(all_dfs)}シート読み込み) ===")
-    log(f"読み込んだシート数: {len(all_dfs)}")
+    log(f"=== 読み込み完了 ({len(all_dfs)}シート) ===")
 
     if not all_dfs:
         messagebox.showwarning("警告", "処理可能なシートがありませんでした")
@@ -415,7 +529,7 @@ def run_initial_build():
     dept_map, qual_map, pos_map = build_master_maps(all_dfs)
 
     # データ統合
-    log("=== BuildEmployeeDetailAndMasterFromGroups: データ統合開始 ===")
+    log("=== データ統合開始 ===")
     combined = consolidate_data(all_dfs, priority=10)
 
     # 詳細表生成
@@ -423,6 +537,9 @@ def run_initial_build():
 
     # マスタ表抽出
     master_df = extract_master_table(detail_df)
+
+    # 退職者抽出
+    retired_df = extract_retired_employees(detail_df)
 
     # 出力
     output_dir = Path("output")
@@ -436,14 +553,157 @@ def run_initial_build():
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         detail_df.to_excel(writer, sheet_name='詳細', index=False)
         master_df.to_excel(writer, sheet_name='マスタ', index=False)
+        if retired_df is not None:
+            retired_df.to_excel(writer, sheet_name='退職者', index=False)
 
-    log("=== BuildEmployeeDetailAndMasterFromGroups: 完了 ===")
     log(f"出力ファイル: {output_path}")
     log("=========================================")
     log("=== 処理完了 ===")
     log("=========================================")
 
-    messagebox.showinfo("完了", f"処理が完了しました\n\n出力ファイル:\n{output_path}")
+    result_msg = f"処理が完了しました\n\n出力ファイル:\n{output_path}\n\n"
+    result_msg += f"詳細: {len(detail_df)}行\n"
+    result_msg += f"マスタ: {len(master_df)}行\n"
+    if retired_df is not None:
+        result_msg += f"退職者: {len(retired_df)}行"
+
+    messagebox.showinfo("完了", result_msg)
+
+
+def run_add_excel():
+    """Excel追加モード"""
+    log("=========================================")
+    log("=== Excel追加モード開始 ===")
+    log("=========================================")
+
+    # 既存マスタを読み込む
+    existing_df = read_existing_master()
+
+    if existing_df is None:
+        messagebox.showerror("エラー", "outputフォルダに既存の統合ファイルが見つかりません\n\n先に「新規マスタ作成」を実行してください")
+        return
+
+    # inputフォルダから新規ファイルを読み込み
+    input_dir = Path("input")
+    if not input_dir.exists():
+        messagebox.showerror("エラー", "inputフォルダが見つかりません")
+        return
+
+    excel_files = list(input_dir.glob("*.xlsx")) + list(input_dir.glob("*.xlsm")) + list(input_dir.glob("*.xls"))
+
+    if not excel_files:
+        messagebox.showwarning("警告", "inputフォルダに追加するExcelファイルがありません")
+        return
+
+    log(f"追加ファイル数: {len(excel_files)}")
+    log("=== 追加ファイル読み込み開始 ===")
+
+    all_dfs = []
+    # 既存マスタを最優先で追加（priority=0）
+    existing_df["__priority__"] = 0
+    all_dfs.append(existing_df)
+
+    # 新規ファイルを読み込み（priority=10）
+    for idx, file_path in enumerate(excel_files, 1):
+        log(f"ファイル ({idx}/{len(excel_files)}): {file_path.name}")
+        dfs = read_excel_all_sheets(file_path)
+        all_dfs.extend(dfs)
+
+    log(f"=== 読み込み完了 ({len(all_dfs)}シート、既存マスタ含む) ===")
+
+    # グローバルマスタ構築
+    dept_map, qual_map, pos_map = build_master_maps(all_dfs)
+
+    # データ統合
+    log("=== データ統合開始 ===")
+    combined = consolidate_data(all_dfs, priority=10)
+
+    # 詳細表生成
+    detail_df = build_detail_table(combined, dept_map, qual_map, pos_map)
+
+    # マスタ表抽出
+    master_df = extract_master_table(detail_df)
+
+    # 退職者抽出
+    retired_df = extract_retired_employees(detail_df)
+
+    # 出力
+    output_dir = Path("output")
+    output_dir.mkdir(exist_ok=True)
+
+    output_filename = f"統合ファイル_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    output_path = output_dir / output_filename
+
+    log(f"出力ファイル作成中: {output_filename}")
+
+    with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+        detail_df.to_excel(writer, sheet_name='詳細', index=False)
+        master_df.to_excel(writer, sheet_name='マスタ', index=False)
+        if retired_df is not None:
+            retired_df.to_excel(writer, sheet_name='退職者', index=False)
+
+    log(f"出力ファイル: {output_path}")
+    log("=========================================")
+    log("=== 処理完了 ===")
+    log("=========================================")
+
+    result_msg = f"Excel追加処理が完了しました\n\n出力ファイル:\n{output_path}\n\n"
+    result_msg += f"詳細: {len(detail_df)}行\n"
+    result_msg += f"マスタ: {len(master_df)}行\n"
+    if retired_df is not None:
+        result_msg += f"退職者: {len(retired_df)}行"
+
+    messagebox.showinfo("完了", result_msg)
+
+
+def select_mode():
+    """モード選択ダイアログ"""
+    root = tk.Tk()
+    root.title("HRTool - モード選択")
+    root.geometry("400x200")
+
+    # ウィンドウを中央に配置
+    root.update_idletasks()
+    x = (root.winfo_screenwidth() // 2) - (root.winfo_width() // 2)
+    y = (root.winfo_screenheight() // 2) - (root.winfo_height() // 2)
+    root.geometry(f"+{x}+{y}")
+
+    selected_mode = [None]  # クロージャで値を保持
+
+    def on_new_master():
+        selected_mode[0] = "new"
+        root.quit()
+        root.destroy()
+
+    def on_add_excel():
+        selected_mode[0] = "add"
+        root.quit()
+        root.destroy()
+
+    def on_cancel():
+        selected_mode[0] = "cancel"
+        root.quit()
+        root.destroy()
+
+    # ラベル
+    label = tk.Label(root, text="処理モードを選択してください", font=("", 12))
+    label.pack(pady=20)
+
+    # ボタン
+    btn_new = tk.Button(root, text="新規マスタ作成\n(inputフォルダ内の全ファイル)",
+                        command=on_new_master, width=30, height=2)
+    btn_new.pack(pady=5)
+
+    btn_add = tk.Button(root, text="Excel追加\n(既存マスタ + 新規input)",
+                        command=on_add_excel, width=30, height=2)
+    btn_add.pack(pady=5)
+
+    btn_cancel = tk.Button(root, text="キャンセル", command=on_cancel, width=30)
+    btn_cancel.pack(pady=5)
+
+    root.mainloop()
+
+    return selected_mode[0]
 
 
 def main():
@@ -455,20 +715,15 @@ def main():
         log(f"ログファイル: {log_filename}")
         log("=========================================")
 
-        # GUIで処理を選択
-        root = tk.Tk()
-        root.withdraw()
+        # モード選択
+        mode = select_mode()
 
-        result = messagebox.askquestion(
-            "HRTool",
-            "処理を選択してください\n\n「はい」: 新規マスタ作成（inputフォルダ内の全ファイル）\n「いいえ」: 終了",
-            icon='question'
-        )
-
-        root.destroy()
-
-        if result == 'yes':
+        if mode == "new":
+            log("モード: 新規マスタ作成")
             run_initial_build()
+        elif mode == "add":
+            log("モード: Excel追加")
+            run_add_excel()
         else:
             log("ユーザーがキャンセルしました")
 
