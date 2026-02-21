@@ -1,0 +1,1889 @@
+Option Explicit
+
+' ====== 設定類 ======
+Private Const MAX_SCAN As Long = 100
+Private Const MAX_DATA_ROWS As Long = 10000  ' 最大行数制限
+Private Const MAX_DATA_COLS As Long = 100    ' 最大列数制限(異常な範囲を防ぐ) - AT列=46列なので100で十分
+
+Private TARGET_COLUMNS() As String
+Private DATE_COLS_LATEST As Object ' Dictionary as Set
+Private CANONICAL_MAP As Object    ' Dictionary: normalized -> canonical
+Private TARGET_CANON_MAP As Object ' Dictionary: normalized(canonical) -> canonical
+Private SUMMARY_KEYS As Object     ' Dictionary: group -> Set(normalized tokens)
+
+' ====== ログファイル関連 ======
+Private logFilePath As String
+Private logFileNum As Integer
+Private logEnabled As Boolean
+
+' ログファイルを開く
+Private Sub OpenLog()
+    On Error Resume Next
+    logFilePath = ThisWorkbook.Path & "\処理ログ_" & Format(Now, "yyyymmdd_hhnnss") & ".txt"
+    logFileNum = FreeFile
+    Open logFilePath For Output As #logFileNum
+    If Err.Number = 0 Then
+        logEnabled = True
+        WriteLog "========================================="
+        WriteLog "HRTool処理ログ"
+        WriteLog "開始時刻: " & Format(Now, "yyyy/mm/dd hh:nn:ss")
+        WriteLog "ログファイル: " & logFilePath
+        WriteLog "========================================="
+    Else
+        logEnabled = False
+        WriteLog "警告: ログファイルを開けませんでした: " & Err.Description
+    End If
+    On Error GoTo 0
+End Sub
+
+' ログファイルを閉じる
+Private Sub CloseLog()
+    On Error Resume Next
+    If logEnabled Then
+        WriteLog "========================================="
+        WriteLog "終了時刻: " & Format(Now, "yyyy/mm/dd hh:nn:ss")
+        WriteLog "========================================="
+        Close #logFileNum
+        logEnabled = False
+        WriteLog "ログファイル保存完了: " & logFilePath
+    End If
+    On Error GoTo 0
+End Sub
+
+' ログを書き込む
+Private Sub WriteLog(msg As String)
+    On Error Resume Next
+    Debug.Print msg  ' イミディエイトウィンドウにも出力
+    If logEnabled Then
+        Print #logFileNum, Format(Now, "yyyy/mm/dd hh:nn:ss") & " | " & msg
+    End If
+    On Error GoTo 0
+End Sub
+
+' 初期化(定数・同義語等)
+Private Sub InitConfig()
+    WriteLog "=== InitConfig: 設定初期化開始 ==="
+    Dim i As Long
+
+    ' TARGET_COLUMNS
+    Dim cols As Variant
+    cols = Array( _
+        "社員番号", "所属コード", "所属名", "資格コード", "資格名", "NO", "健保コード", "氏名", "備考", "短時間労働者", _
+        "よみがな", "現等級", "現職位", "性別", "年齢", "生年月日", "学校名", "学科名", "学歴コード", "勤続年数", _
+        "入社年月日", "勤務地", "本部", "所属部", "所属課", "部", "課", "係", "班", "工", "部門コード", _
+        "役職名", "任命日", "前役職名", "前任命日", "等級", "昇級日", "職位コード", "職位名", _
+        "昇格日", "昇格日(任命日)", "社員区分" _
+    )
+    ReDim TARGET_COLUMNS(0 To UBound(cols))
+    For i = 0 To UBound(cols)
+        TARGET_COLUMNS(i) = CStr(cols(i))
+    Next i
+
+    ' DATE_COLS_LATEST
+    Set DATE_COLS_LATEST = CreateObject("Scripting.Dictionary")
+    DATE_COLS_LATEST.CompareMode = vbTextCompare
+    Dim dcols As Variant
+    dcols = Array("任命日", "前任命日", "昇級日", "昇格日", "入社年月日", "昇格日(任命日)")
+    For i = LBound(dcols) To UBound(dcols)
+        DATE_COLS_LATEST(dcols(i)) = True
+    Next i
+
+    ' 同義語マップ
+    Set CANONICAL_MAP = CreateObject("Scripting.Dictionary")
+    CANONICAL_MAP.CompareMode = vbTextCompare
+    Set TARGET_CANON_MAP = CreateObject("Scripting.Dictionary")
+    TARGET_CANON_MAP.CompareMode = vbTextCompare
+
+    Dim syn As Object: Set syn = CreateObject("Scripting.Dictionary")
+    syn.CompareMode = vbTextCompare
+    AddSynonyms syn, "社員番号", Array("社員番号", "社員コード", "従業員コード", "従業員番号", "社員id", "employeeid")
+    AddSynonyms syn, "所属コード", Array("所属コード", "部署コード", "組織コード", "部門コード")
+    AddSynonyms syn, "所属名", Array("所属名", "部署名", "部門名", "組織名")
+    AddSynonyms syn, "資格コード", Array("資格コード", "資格id", "資格no")
+    AddSynonyms syn, "資格名", Array("資格名", "資格名称")
+    AddSynonyms syn, "NO", Array("no", "連番", "番号")
+    AddSynonyms syn, "健保コード", Array("健保コード", "健康保険コード", "健保no")
+    AddSynonyms syn, "氏名", Array("氏名", "社員氏名", "名前", "従業員名")
+    AddSynonyms syn, "備考", Array("備考", "コメント", "注記", "メモ")
+    AddSynonyms syn, "短時間労働者", Array("短時間労働者", "短時間", "短時間 労働者", "短時間" & vbLf & "労働者")
+    AddSynonyms syn, "よみがな", Array("よみがな", "ふりがな", "フリガナ", "kana")
+    AddSynonyms syn, "現等級", Array("現等級", "等級", "グレード", "現グレード")
+    AddSynonyms syn, "現職位", Array("現職位", "職位", "現職位(currentjobtitle/rank)")
+    AddSynonyms syn, "性別", Array("性別", "gender", "ｼﾞｪﾝﾀﾞｰ", "男/女")
+    AddSynonyms syn, "年齢", Array("年齢", "age")
+    AddSynonyms syn, "生年月日", Array("生年月日", "誕生日", "birthday", "dob")
+    AddSynonyms syn, "学校名", Array("学校名", "学校")
+    AddSynonyms syn, "学科名", Array("学科名", "学科")
+    AddSynonyms syn, "学歴コード", Array("学歴コード", "学歴 ｺｰﾄﾞ", "学歴 コード")
+    AddSynonyms syn, "勤続年数", Array("勤続年数", "勤続 年数")
+    AddSynonyms syn, "入社年月日", Array("入社年月日", "入社日", "入社")
+    AddSynonyms syn, "勤務地", Array("勤務地", "ロケーション")
+    AddSynonyms syn, "本部", Array("本部")
+    AddSynonyms syn, "所属部", Array("所属部", "部")
+    AddSynonyms syn, "所属課", Array("所属課", "課")
+    AddSynonyms syn, "部", Array("部")
+    AddSynonyms syn, "課", Array("課")
+    AddSynonyms syn, "係", Array("係")
+    AddSynonyms syn, "班", Array("班")
+    AddSynonyms syn, "工", Array("工")
+    AddSynonyms syn, "部門コード", Array("部門コード")
+    AddSynonyms syn, "役職名", Array("役職名", "役職")
+    AddSynonyms syn, "任命日", Array("任命日")
+    AddSynonyms syn, "前役職名", Array("前役職名")
+    AddSynonyms syn, "前任命日", Array("前任命日")
+    AddSynonyms syn, "等級", Array("等級")
+    AddSynonyms syn, "昇級日", Array("昇級日")
+    AddSynonyms syn, "職位コード", Array("職位コード")
+    AddSynonyms syn, "職位名", Array("職位名")
+    AddSynonyms syn, "昇格日", Array("昇格日")
+    AddSynonyms syn, "昇格日(任命日)", Array("昇格日(任命日)", "昇格日 (任命日)")
+    AddSynonyms syn, "社員区分", Array("社員区分", "社員 区分", "雇用区分", "従業員区分")
+
+    Dim canon As Variant, arr As Variant, sKey As String
+    For Each canon In syn.keys
+        arr = syn(canon)
+        For i = LBound(arr) To UBound(arr)
+            sKey = NormalizeColKey(CStr(arr(i)))
+            CANONICAL_MAP(sKey) = CStr(canon)
+        Next i
+        CANONICAL_MAP(NormalizeColKey(CStr(canon))) = CStr(canon)
+        TARGET_CANON_MAP(NormalizeColKey(CStr(canon))) = CStr(canon)
+    Next canon
+
+    Set SUMMARY_KEYS = CreateObject("Scripting.Dictionary")
+    SUMMARY_KEYS.CompareMode = vbTextCompare
+    Set SUMMARY_KEYS("title") = MakeSet(Array("従業員人数", "人数", "従業員"))
+    Set SUMMARY_KEYS("dept_code") = MakeSet(Array("部署コード", "所属コード", "部門コード", "コード"))
+    Set SUMMARY_KEYS("dept_name") = MakeSet(Array("部署名", "所属名", "部門名"))
+    Set SUMMARY_KEYS("seishain") = MakeSet(Array("正社員"))
+    Set SUMMARY_KEYS("male") = MakeSet(Array("m", "ｍ", "男性", "男"))
+    Set SUMMARY_KEYS("female") = MakeSet(Array("f", "ｆ", "女性", "女"))
+    Set SUMMARY_KEYS("total") = MakeSet(Array("計", "合計"))
+    Set SUMMARY_KEYS("part") = MakeSet(Array("パ・嘱", "パート", "嘱託", "パート嘱託", "パ嘱"))
+    Set SUMMARY_KEYS("kenshusei") = MakeSet(Array("研修生"))
+    Set SUMMARY_KEYS("sogo") = MakeSet(Array("総合計", "総数"))
+
+    WriteLog "=== InitConfig: 設定初期化完了 ==="
+End Sub
+
+Private Sub AddSynonyms(ByRef syn As Object, ByVal canonical As String, ByVal arr As Variant)
+    Dim v As Variant, listArr() As Variant, i As Long
+    ReDim listArr(LBound(arr) To UBound(arr))
+    i = LBound(arr)
+    For Each v In arr
+        listArr(i) = CStr(v)
+        i = i + 1
+    Next v
+    syn(canonical) = listArr
+End Sub
+
+Private Function MakeSet(arr As Variant) As Object
+    Dim d As Object: Set d = CreateObject("Scripting.Dictionary")
+    d.CompareMode = vbTextCompare
+    Dim v As Variant
+    For Each v In arr
+        d(NormalizeColKey(CStr(v))) = True
+    Next v
+    Set MakeSet = d
+End Function
+
+' ====== ユーティリティ ======
+Private Function NormalizeColKey(ByVal s As String) As String
+    s = LCase$(Trim$(s))
+    s = Replace(s, "　", " ")
+    s = Replace(s, "（", "(")
+    s = Replace(s, "）", ")")
+    s = Replace(s, "ｺｰﾄﾞ", "コード")
+    s = ReplaceRegex(s, "\s+", "")
+    NormalizeColKey = s
+End Function
+
+Private Function NormalizeValueText(ByVal s As String) As String
+    s = Replace(s, "　", " ")
+    s = ReplaceRegex(s, "\s+", " ")
+    s = Trim$(s)
+    s = ReplaceRegex(s, "[（(].*?[）)]", "")
+    s = ReplaceRegex(s, "[・/：:\-‐]", " ")
+    s = ReplaceRegex(s, "\s+", " ")
+    NormalizeValueText = Trim$(s)
+End Function
+
+Private Function ReplaceRegex(ByVal text As String, ByVal pattern As String, ByVal repl As String) As String
+    On Error Resume Next
+    Dim re As Object: Set re = CreateObject("VBScript.RegExp")
+    If Err.Number <> 0 Then
+        ReplaceRegex = text
+        Exit Function
+    End If
+    re.pattern = pattern
+    re.Global = True
+    re.MultiLine = True
+    ReplaceRegex = re.Replace(text, repl)
+End Function
+
+Private Function MakeUnique(labels As Variant) As Variant
+    Dim d As Object: Set d = CreateObject("Scripting.Dictionary")
+    d.CompareMode = vbTextCompare
+    Dim out() As Variant: ReDim out(LBound(labels) To UBound(labels))
+    Dim i As Long, base As String, cnt As Long
+    For i = LBound(labels) To UBound(labels)
+        base = CStr(labels(i))
+        If Trim$(base) = "" Then base = "col"
+        If d.Exists(base) Then
+            cnt = d(base)
+            d(base) = cnt + 1
+            out(i) = base & "_" & (cnt + 1)
+        Else
+            d(base) = 0
+            out(i) = base
+        End If
+    Next i
+    MakeUnique = out
+End Function
+
+' ====== 実際のデータ範囲を検出(最適化版) ======
+Private Function GetActualDataRange(ws As Worksheet) As Variant
+    On Error GoTo ErrorHandler
+
+    ' 空のシートチェック
+    If ws.UsedRange.Rows.Count = 1 And ws.UsedRange.Columns.Count = 1 Then
+        If IsEmpty(ws.Cells(1, 1).Value) And Trim$(ws.Cells(1, 1).Value & "") = "" Then
+            GetActualDataRange = Empty
+            Exit Function
+        End If
+    End If
+
+    ' 実際の最終行・最終列を検出
+    Dim lastRow As Long, lastCol As Long
+    lastRow = ws.Cells.Find("*", SearchOrder:=xlByRows, SearchDirection:=xlPrevious).Row
+    lastCol = ws.Cells.Find("*", SearchOrder:=xlByColumns, SearchDirection:=xlPrevious).Column
+
+    WriteLog "  - シート '" & ws.Name & "': Excelが認識=" & lastRow & "行 x " & lastCol & "列"
+
+    ' 異常な範囲チェック
+    If lastRow > MAX_DATA_ROWS Then
+        WriteLog "  警告: シート '" & ws.Name & "' の行数が上限を超えています (" & lastRow & " > " & MAX_DATA_ROWS & ")"
+        lastRow = MAX_DATA_ROWS
+    End If
+
+    If lastCol > MAX_DATA_COLS Then
+        WriteLog "  警告: シート '" & ws.Name & "' の列数が上限を超えています (" & lastCol & " > " & MAX_DATA_COLS & ")"
+        lastCol = MAX_DATA_COLS
+    End If
+
+    ' セル範囲のチェック
+    Dim totalCells As Long
+    totalCells = lastRow * lastCol
+    If totalCells > 500000 Then
+        WriteLog "  警告: シート '" & ws.Name & "' のセル数が多すぎます (" & totalCells & " セル). 最初の500行に制限します."
+        lastRow = Application.WorksheetFunction.Min(500, lastRow)
+    End If
+
+    ' データを読み込む
+    Dim arr As Variant
+    If lastRow = 1 And lastCol = 1 Then
+        ReDim arr(1 To 1, 1 To 1)
+        arr(1, 1) = ws.Cells(1, 1).Value
+    Else
+        arr = ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol)).Value
+    End If
+
+    ' 実際にデータがある範囲を再計算(空行・空列を除外)
+    WriteLog "  → 実データ範囲検出開始 (スキャン範囲: " & UBound(arr, 1) & "行 x " & UBound(arr, 2) & "列)"
+    Dim actualLastRow As Long, actualLastCol As Long
+    actualLastRow = 0
+    actualLastCol = 0
+
+    Dim r As Long, c As Long
+    Dim emptyRowCount As Long, emptyColCount As Long
+    Dim hasDataInRow As Boolean
+
+    ' 最終行を検出（後ろから10行連続空行でデータ終了と判定）
+    emptyRowCount = 0
+    For r = UBound(arr, 1) To 1 Step -1
+        hasDataInRow = False
+        For c = 1 To UBound(arr, 2)
+            If Not IsEmpty(arr(r, c)) And Trim$(CStr(arr(r, c)) & "") <> "" Then
+                hasDataInRow = True
+                Exit For
+            End If
+        Next c
+
+        If hasDataInRow Then
+            actualLastRow = r
+            emptyRowCount = 0
+            Exit For
+        Else
+            emptyRowCount = emptyRowCount + 1
+            If emptyRowCount >= 10 Then
+                ' 10行連続空行 → データなしと判定
+                actualLastRow = r - 1
+                Exit For
+            End If
+        End If
+    Next r
+
+    If actualLastRow = 0 Then
+        WriteLog "  → 実データなし（全行が空）"
+        GetActualDataRange = Empty
+        Exit Function
+    End If
+
+    WriteLog "    → 最終行検出: " & actualLastRow & "行目"
+
+    ' 最終列を検出（右から10列連続空列でデータ終了と判定）
+    emptyColCount = 0
+    For c = UBound(arr, 2) To 1 Step -1
+        Dim hasDataInCol As Boolean: hasDataInCol = False
+        For r = 1 To actualLastRow
+            If Not IsEmpty(arr(r, c)) And Trim$(CStr(arr(r, c)) & "") <> "" Then
+                hasDataInCol = True
+                Exit For
+            End If
+        Next r
+
+        If hasDataInCol Then
+            actualLastCol = c
+            emptyColCount = 0
+            Exit For
+        Else
+            emptyColCount = emptyColCount + 1
+            If emptyColCount >= 10 Then
+                ' 10列連続空列 → データなしと判定
+                actualLastCol = c - 1
+                Exit For
+            End If
+        End If
+    Next c
+
+    If actualLastCol = 0 Then
+        WriteLog "  → 実データなし（全列が空）"
+        GetActualDataRange = Empty
+        Exit Function
+    End If
+
+    WriteLog "    → 最終列検出: " & actualLastCol & "列目"
+    WriteLog "  → 実データ範囲: " & actualLastRow & "行 x " & actualLastCol & "列"
+
+    ' 実データ範囲のみを返す
+    If actualLastRow < UBound(arr, 1) Or actualLastCol < UBound(arr, 2) Then
+        WriteLog "  → データトリミング中: " & actualLastRow & "行 x " & actualLastCol & "列"
+        Dim trimmedArr() As Variant
+        ReDim trimmedArr(1 To actualLastRow, 1 To actualLastCol)
+        For r = 1 To actualLastRow
+            For c = 1 To actualLastCol
+                trimmedArr(r, c) = arr(r, c)
+            Next c
+        Next r
+        WriteLog "  → トリミング完了"
+        GetActualDataRange = trimmedArr
+    Else
+        WriteLog "  → トリミング不要（全範囲がデータ）"
+        GetActualDataRange = arr
+    End If
+
+    Exit Function
+
+ErrorHandler:
+    WriteLog "  エラー: シート '" & ws.Name & "' のデータ読み込みに失敗しました: " & Err.Description
+    GetActualDataRange = Empty
+End Function
+
+' ====== ファイル読み込み(全シート・最適化版) ======
+Private Function MakeItem(fileName As String, sheetName As String, data As Variant) As Object
+    Dim d As Object: Set d = CreateObject("Scripting.Dictionary")
+    d.CompareMode = vbTextCompare
+    d("FileName") = fileName
+    d("SheetName") = sheetName
+    d("Data") = data
+    Set MakeItem = d
+End Function
+
+Private Function ReadExcelAllSheets(paths As Collection) As Collection
+    WriteLog "=== ReadExcelAllSheets: ファイル読み込み開始 ==="
+    Dim items As New Collection
+    Dim p As Variant, wb As Workbook, ws As Worksheet, arr As Variant
+    Dim fileCount As Long: fileCount = 0
+    Dim totalFiles As Long: totalFiles = paths.Count
+
+    ' パフォーマンス最適化設定
+    Dim originalCalc As XlCalculation
+    Dim originalEvents As Boolean
+    Dim originalUpdating As Boolean
+
+    originalCalc = Application.Calculation
+    originalEvents = Application.EnableEvents
+    originalUpdating = Application.ScreenUpdating
+
+    On Error GoTo CleanUp
+
+    Application.Calculation = xlCalculationManual
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
+
+    ' マクロを無効化
+    Dim originalSecurity As MsoAutomationSecurity
+    originalSecurity = Application.AutomationSecurity
+    Application.AutomationSecurity = msoAutomationSecurityForceDisable
+
+    For Each p In paths
+        fileCount = fileCount + 1
+        WriteLog "ファイル (" & fileCount & "/" & totalFiles & "): " & Dir(CStr(p))
+        Application.StatusBar = "ファイル読み込み中 (" & fileCount & "/" & totalFiles & "): " & Dir(CStr(p))
+
+        On Error Resume Next
+        Set wb = Nothing
+        Set wb = Workbooks.Open(fileName:=CStr(p), ReadOnly:=True, UpdateLinks:=False, _
+                                IgnoreReadOnlyRecommended:=True, Notify:=False)
+
+        If Err.Number <> 0 Then
+            WriteLog "  エラー: ファイル '" & CStr(p) & "' を開けませんでした: " & Err.Description
+            Err.Clear
+        ElseIf Not wb Is Nothing Then
+            Dim sheetCount As Long: sheetCount = 0
+            For Each ws In wb.Worksheets
+                sheetCount = sheetCount + 1
+                WriteLog "  シート (" & sheetCount & "/" & wb.Worksheets.Count & "): " & ws.Name
+                Application.StatusBar = "シート読み込み中 (" & fileCount & "/" & totalFiles & "): " & _
+                                      wb.Name & " - " & ws.Name & " (" & sheetCount & "/" & wb.Worksheets.Count & ")"
+
+                On Error Resume Next
+                arr = Empty
+                arr = GetActualDataRange(ws)
+
+                If Err.Number <> 0 Then
+                    WriteLog "  エラー: シート '" & ws.Name & "' の読み込みに失敗: " & Err.Description
+                    Err.Clear
+                ElseIf Not IsEmpty(arr) Then
+                    items.Add MakeItem(wb.Name, ws.Name, arr)
+                    WriteLog "  → シート '" & ws.Name & "' を追加しました"
+                End If
+
+                On Error GoTo CleanUp
+            Next ws
+
+            wb.Close SaveChanges:=False
+        End If
+        On Error GoTo CleanUp
+    Next p
+
+CleanUp:
+    ' 設定を元に戻す
+    Application.Calculation = originalCalc
+    Application.EnableEvents = originalEvents
+    Application.ScreenUpdating = originalUpdating
+    Application.AutomationSecurity = originalSecurity
+    Application.StatusBar = False
+
+    If Err.Number <> 0 Then
+        WriteLog "エラー: " & Err.Description
+        Err.Clear
+    End If
+
+    WriteLog "=== ReadExcelAllSheets: 完了 (" & items.Count & "シート読み込み) ==="
+    Set ReadExcelAllSheets = items
+End Function
+
+' ====== ヘッダ推定・列正規化 ======
+Private Function DetectHeaderRow(arr As Variant, Optional maxScan As Long = MAX_SCAN) As Long
+    Dim rows As Long, cols As Long, r As Long, c As Long
+    rows = UBound(arr, 1): cols = UBound(arr, 2)
+    Dim limit As Long: limit = IIf(rows < maxScan, rows, maxScan)
+    Dim bestIdx As Long: bestIdx = -1
+    Dim bestScore As Long: bestScore = -1
+
+    For r = 1 To limit
+        Dim nonEmpty As Long: nonEmpty = 0
+        Dim base As Long: base = 0
+        Dim empHit As Long: empHit = 0
+        Dim healthHit As Long: healthHit = 0
+        Dim nameHit As Long: nameHit = 0
+        Dim deptHit As Long: deptHit = 0
+        Dim qualHit As Long: qualHit = 0
+
+        For c = 1 To cols
+            Dim val As String
+            val = ""
+            On Error Resume Next
+            val = CStr(arr(r, c))
+            On Error GoTo 0
+            val = NormalizeColKey(val)
+            If val <> "" Then nonEmpty = nonEmpty + 1
+            If CANONICAL_MAP.Exists(val) Then base = base + 1
+            If InSummary(KEY_EMP(), val) Then empHit = empHit + 1
+            If InSummary(KEY_HEALTH(), val) Then healthHit = healthHit + 1
+            If InSummary(KEY_NAME(), val) Then nameHit = nameHit + 1
+            If InSummary(KEY_DEPT(), val) Then deptHit = deptHit + 1
+            If InSummary(KEY_QUAL(), val) Then qualHit = qualHit + 1
+        Next c
+        If (empHit + healthHit + nameHit + deptHit + qualHit) > 0 And nonEmpty >= 2 Then
+            Dim score As Long
+            score = base + empHit * 3 + healthHit * 3 + nameHit * 2 + deptHit * 2 + qualHit * 2
+            If score > bestScore Then
+                bestScore = score
+                bestIdx = r
+            End If
+        End If
+    Next r
+    DetectHeaderRow = bestIdx
+End Function
+
+Private Function InSummary(keys As Object, key As String) As Boolean
+    InSummary = keys.Exists(key)
+End Function
+
+Private Function KEY_EMP() As Object
+    Static d As Object
+    If d Is Nothing Then
+        Set d = CreateObject("Scripting.Dictionary")
+        d.CompareMode = vbTextCompare
+        d(NormalizeColKey("社員番号")) = True
+        d(NormalizeColKey("社員コード")) = True
+        d(NormalizeColKey("従業員コード")) = True
+        d(NormalizeColKey("従業員番号")) = True
+        d(NormalizeColKey("社員id")) = True
+        d(NormalizeColKey("employeeid")) = True
+    End If
+    Set KEY_EMP = d
+End Function
+
+Private Function KEY_HEALTH() As Object
+    Static d As Object
+    If d Is Nothing Then
+        Set d = CreateObject("Scripting.Dictionary")
+        d.CompareMode = vbTextCompare
+        d(NormalizeColKey("健保コード")) = True
+        d(NormalizeColKey("健康保険コード")) = True
+        d(NormalizeColKey("健保no")) = True
+    End If
+    Set KEY_HEALTH = d
+End Function
+
+Private Function KEY_NAME() As Object
+    Static d As Object
+    If d Is Nothing Then
+        Set d = CreateObject("Scripting.Dictionary")
+        d.CompareMode = vbTextCompare
+        d(NormalizeColKey("氏名")) = True
+        d(NormalizeColKey("社員氏名")) = True
+        d(NormalizeColKey("名前")) = True
+        d(NormalizeColKey("従業員名")) = True
+    End If
+    Set KEY_NAME = d
+End Function
+
+Private Function KEY_DEPT() As Object
+    Static d As Object
+    If d Is Nothing Then
+        Set d = CreateObject("Scripting.Dictionary")
+        d.CompareMode = vbTextCompare
+        d(NormalizeColKey("所属コード")) = True
+        d(NormalizeColKey("部署コード")) = True
+        d(NormalizeColKey("組織コード")) = True
+        d(NormalizeColKey("部門コード")) = True
+    End If
+    Set KEY_DEPT = d
+End Function
+
+Private Function KEY_QUAL() As Object
+    Static d As Object
+    If d Is Nothing Then
+        Set d = CreateObject("Scripting.Dictionary")
+        d.CompareMode = vbTextCompare
+        d(NormalizeColKey("資格コード")) = True
+        d(NormalizeColKey("資格id")) = True
+        d(NormalizeColKey("資格no")) = True
+    End If
+    Set KEY_QUAL = d
+End Function
+
+Private Function ToCanonicalColumns(header As Variant) As Variant
+    Dim out() As Variant: ReDim out(LBound(header) To UBound(header))
+    Dim i As Long, key As String, canon As String
+    For i = LBound(header) To UBound(header)
+        key = NormalizeColKey(CStr(header(i)))
+        If CANONICAL_MAP.Exists(key) Then
+            canon = CStr(CANONICAL_MAP(key))
+            If TARGET_CANON_MAP.Exists(NormalizeColKey(canon)) Then
+                out(i) = CStr(TARGET_CANON_MAP(NormalizeColKey(canon)))
+            Else
+                out(i) = canon
+            End If
+        Else
+            out(i) = CStr(header(i))
+        End If
+    Next i
+    ToCanonicalColumns = out
+End Function
+
+' ====== 実行入口 ======
+Public Sub RunInitialBuild()
+    On Error GoTo ErrorHandler
+
+    ' ログファイルを開く
+    OpenLog
+
+    WriteLog vbCrLf & "========================================="
+    WriteLog "=== RunInitialBuild: 初回作成開始 ==="
+    WriteLog "========================================="
+
+    InitConfig
+    Dim files As Collection: Set files = PickFiles("初回作成: ソースExcelを選択してください")
+    If files Is Nothing Or files.Count = 0 Then
+        CloseLog
+        Exit Sub
+    End If
+
+    WriteLog "選択ファイル数: " & files.Count
+    Application.StatusBar = "処理開始..."
+
+    Dim items As Collection: Set items = ReadExcelAllSheets(files)
+
+    If items.Count = 0 Then
+        MsgBox "読み込めるデータが見つかりませんでした。", vbExclamation
+        WriteLog "=== エラー: データが見つかりませんでした ==="
+        CloseLog
+        Exit Sub
+    End If
+
+    WriteLog "読み込んだシート数: " & items.Count
+    Application.StatusBar = "データ統合中..."
+
+    Dim detail As Variant, master As Variant
+    Dim conflicts As Object
+    BuildEmployeeDetailAndMasterFromGroups Nothing, items, detail, master, conflicts
+
+    Application.StatusBar = "部署人数集計中..."
+    WriteLog "=== 部署人数集計中 ==="
+
+    Dim counts As Variant
+    counts = ExtractDeptCountsFromSummary(items)
+    If IsEmpty(counts) Then counts = BuildDeptCountsFromDetail(detail)
+
+    Application.StatusBar = "出力ファイル作成中..."
+    WriteLog "=== 出力ファイル作成中 ==="
+
+    WriteOutput detail, master, counts, conflicts, "社員統合_詳細＋マスタ.xlsx"
+
+    Application.StatusBar = False
+    WriteLog "========================================="
+    WriteLog "=== RunInitialBuild: 正常完了 ==="
+    WriteLog "========================================="
+    CloseLog
+    MsgBox "完了しました。" & vbCrLf & items.Count & " 個のシートを処理しました。" & vbCrLf & vbCrLf & "ログファイル: " & logFilePath, vbInformation
+    Exit Sub
+
+ErrorHandler:
+    Application.StatusBar = False
+    WriteLog "========================================="
+    WriteLog "=== エラー発生 ==="
+    WriteLog "Error Number: " & Err.Number
+    WriteLog "Description: " & Err.Description
+    WriteLog "Source: " & Err.Source
+    WriteLog "========================================="
+    CloseLog
+    MsgBox "エラーが発生しました: " & Err.Description & vbCrLf & "Error Number: " & Err.Number & vbCrLf & vbCrLf & "ログファイル: " & logFilePath, vbCritical
+End Sub
+
+Public Sub RunAddMerge()
+    On Error GoTo ErrorHandler
+
+    ' ログファイルを開く
+    OpenLog
+
+    WriteLog vbCrLf & "========================================="
+    WriteLog "=== RunAddMerge: 追加反映開始 ==="
+    WriteLog "========================================="
+
+    InitConfig
+    Dim masters As Collection: Set masters = PickFiles("追加反映: マスタ側Excel(既存の社員詳細一覧を含む)を選択")
+    Dim adds As Collection: Set adds = PickFiles("追加反映: 追加データExcelを選択")
+    If (masters Is Nothing Or masters.Count = 0) And (adds Is Nothing Or adds.Count = 0) Then
+        CloseLog
+        Exit Sub
+    End If
+
+    Application.StatusBar = "マスタファイル読み込み中..."
+    WriteLog "=== マスタファイル読み込み中 ==="
+
+    Dim masterItems As Collection: Set masterItems = ReadExcelAllSheets(masters)
+
+    Application.StatusBar = "追加ファイル読み込み中..."
+    WriteLog "=== 追加ファイル読み込み中 ==="
+
+    Dim addItems As Collection: Set addItems = ReadExcelAllSheets(adds)
+
+    Application.StatusBar = "データ統合中..."
+    WriteLog "=== データ統合中 ==="
+
+    Dim detail As Variant, master As Variant
+    Dim conflicts As Object
+    BuildEmployeeDetailAndMasterFromGroups masterItems, addItems, detail, master, conflicts
+
+    Dim allItems As New Collection, i As Long
+    If Not masterItems Is Nothing Then
+        For i = 1 To masterItems.Count: allItems.Add masterItems.Item(i): Next i
+    End If
+    If Not addItems Is Nothing Then
+        For i = 1 To addItems.Count: allItems.Add addItems.Item(i): Next i
+    End If
+
+    Application.StatusBar = "部署人数集計中..."
+    WriteLog "=== 部署人数集計中 ==="
+
+    Dim counts As Variant
+    counts = ExtractDeptCountsFromSummary(allItems)
+    If IsEmpty(counts) Then counts = BuildDeptCountsFromDetail(detail)
+
+    Application.StatusBar = "出力ファイル作成中..."
+    WriteLog "=== 出力ファイル作成中 ==="
+
+    WriteOutput detail, master, counts, conflicts, "社員統合_詳細＋マスタ.xlsx"
+
+    Application.StatusBar = False
+    WriteLog "========================================="
+    WriteLog "=== RunAddMerge: 正常完了 ==="
+    WriteLog "========================================="
+    CloseLog
+    MsgBox "完了しました。" & vbCrLf & allItems.Count & " 個のシートを処理しました。" & vbCrLf & vbCrLf & "ログファイル: " & logFilePath, vbInformation
+    Exit Sub
+
+ErrorHandler:
+    Application.StatusBar = False
+    WriteLog "========================================="
+    WriteLog "=== エラー発生 ==="
+    WriteLog "Error Number: " & Err.Number
+    WriteLog "Description: " & Err.Description
+    WriteLog "Source: " & Err.Source
+    WriteLog "========================================="
+    CloseLog
+    MsgBox "エラーが発生しました: " & Err.Description & vbCrLf & "Error Number: " & Err.Number & vbCrLf & vbCrLf & "ログファイル: " & logFilePath, vbCritical
+End Sub
+
+' ====== ファイル選択(外部参照不要・1行) ======
+Private Function PickFiles(prompt As String) As Collection
+    Dim sel As Variant
+    sel = Application.GetOpenFilename(FileFilter:="Excel files (*.xlsx;*.xlsm;*.xlsb;*.xls),*.xlsx;*.xlsm;*.xlsb;*.xls", Title:=prompt, MultiSelect:=True)
+    If IsArray(sel) Then
+        Dim c As New Collection, i As Long
+        For i = LBound(sel) To UBound(sel)
+            c.Add sel(i)
+        Next i
+        Set PickFiles = c
+    Else
+        Set PickFiles = Nothing
+    End If
+End Function
+
+' ====== 主要処理 ======
+Private Sub BuildEmployeeDetailAndMasterFromGroups(masterItems As Collection, addItems As Collection, ByRef detailOut As Variant, ByRef masterOut As Variant, ByRef conflictsOut As Object)
+    WriteLog "=== BuildEmployeeDetailAndMasterFromGroups: データ統合開始 ==="
+    Dim normFrames As New Collection
+
+    Dim it As Object, i As Long
+    If Not masterItems Is Nothing Then
+        WriteLog "マスタアイテム処理中 (" & masterItems.Count & "件)"
+        For i = 1 To masterItems.Count
+            Set it = masterItems.Item(i)
+            Dim df As Variant
+            df = NormalizeOne(it)
+            If Not IsEmpty(df) Then
+                df = AddColumn(df, "__priority__", 0)
+                normFrames.Add df
+            End If
+        Next i
+    End If
+    If Not addItems Is Nothing Then
+        WriteLog "追加アイテム処理中 (" & addItems.Count & "件)"
+        For i = 1 To addItems.Count
+            ' 10シートごとに進捗ログ出力
+            If i Mod 10 = 1 Or i = addItems.Count Then
+                WriteLog "  進捗: " & i & "/" & addItems.Count & " シート処理中"
+            End If
+            Set it = addItems.Item(i)
+            Dim df2 As Variant
+            df2 = NormalizeOne(it)
+            If Not IsEmpty(df2) Then
+                df2 = AddColumn(df2, "__priority__", 10)
+                normFrames.Add df2
+                ' 大きいフレームの場合のみログ
+                If (UBound(df2, 1) - 1) > 100 Then
+                    WriteLog "    → シート '" & it("SheetName") & "' 追加完了 (行:" & (UBound(df2, 1) - 1) & ", 累計フレーム:" & normFrames.Count & ")"
+                End If
+            End If
+        Next i
+        WriteLog "追加アイテム処理完了 (合計フレーム:" & normFrames.Count & ")"
+    End If
+
+    If normFrames.Count = 0 Then
+        detailOut = Empty
+        masterOut = Empty
+        Set conflictsOut = CreateObject("Scripting.Dictionary")
+        WriteLog "=== 警告: 正規化されたデータがありません ==="
+        Exit Sub
+    End If
+
+    WriteLog "テーブル結合中 (" & normFrames.Count & "テーブル)"
+    Dim big As Variant: big = ConcatTables(normFrames, "__source__")
+    WriteLog "結合後の行数: " & (UBound(big, 1) - 1) & "行"
+
+    Dim deptMap As Object, qualMap As Object, posMap As Object, masterConf As Object
+    Dim baseItems As Collection
+    If masterItems Is Nothing Then
+        Set baseItems = addItems
+    Else
+        Set baseItems = ConcatItems(masterItems, addItems)
+    End If
+
+    WriteLog "グローバルマスタ構築中"
+    BuildGlobalMasters baseItems, deptMap, qualMap, posMap, masterConf
+    WriteLog "  → グローバルマスタ構築完了 (所属: " & deptMap.Count & "件, 資格: " & qualMap.Count & "件, 職位: " & posMap.Count & "件)"
+
+    WriteLog "必要列の追加中"
+    Dim colName As Variant
+    Dim addedCols As Long: addedCols = 0
+    For Each colName In TARGET_COLUMNS
+        If FindColumnIndex(big, CStr(colName)) = 0 Then
+            big = AddColumn(big, CStr(colName), vbNullString)
+            addedCols = addedCols + 1
+        End If
+    Next colName
+    WriteLog "  → 必要列の追加完了 (" & addedCols & "列追加)"
+
+    WriteLog "優先度でソート中 (行数: " & (UBound(big, 1) - 1) & ")"
+    big = SortByColumn(big, "__priority__", True)
+    WriteLog "  → 優先度ソート完了"
+
+    WriteLog "詳細表生成中"
+    detailOut = BuildDetail(big, deptMap, qualMap, posMap)
+    WriteLog "型統一処理中"
+    detailOut = UnifyTypes(detailOut)
+    WriteLog "  → 型統一処理完了"
+
+    WriteLog "データ補填中: 健保コード"
+    detailOut = FillFromModeMap(detailOut, big, "健保コード")
+    WriteLog "  → 健保コード補填完了"
+    WriteLog "データ補填中: NO"
+    detailOut = FillFromModeMap(detailOut, big, "NO")
+    WriteLog "  → NO補填完了"
+
+    WriteLog "マスタ抽出中"
+    masterOut = ExtractMaster(detailOut)
+
+    WriteLog "最終ソート中: 詳細表 (社員番号)"
+    detailOut = SortByEmpNo(detailOut)
+    WriteLog "  → 詳細表ソート完了"
+    WriteLog "最終ソート中: マスタ表 (社員番号)"
+    masterOut = SortByEmpNo(masterOut)
+    WriteLog "  → マスタ表ソート完了"
+
+    Set conflictsOut = masterConf
+    WriteLog "=== BuildEmployeeDetailAndMasterFromGroups: 完了 ==="
+End Sub
+
+' ====== NormalizeOne ======
+Private Function NormalizeOne(it As Object) As Variant
+    On Error GoTo ErrorHandler
+
+    Dim arr As Variant: arr = it("Data")
+    If IsEmpty(arr) Then NormalizeOne = Empty: Exit Function
+    Dim rows As Long: rows = UBound(arr, 1)
+    Dim cols As Long: cols = UBound(arr, 2)
+
+    Dim hdrRow As Long: hdrRow = DetectHeaderRow(arr, MAX_SCAN)
+    Dim dataStart As Long: dataStart = IIf(hdrRow > 0, hdrRow + 1, 1)
+
+    Dim header() As Variant: ReDim header(1 To cols)
+    Dim c As Long
+    If hdrRow > 0 Then
+        For c = 1 To cols
+            header(c) = SafeStr(arr(hdrRow, c))
+        Next c
+    Else
+        For c = 1 To cols
+            header(c) = "col_" & c
+        Next c
+    End If
+    header = MakeUnique(header)
+    header = ToCanonicalColumns(header)
+
+    Dim r As Long, df() As Variant
+    If dataStart <= rows Then
+        df = SliceTable(arr, dataStart, rows, 1, cols, header)
+    Else
+        NormalizeOne = Empty: Exit Function
+    End If
+
+    ' 社員番号または氏名のどちらかが必須
+    Dim idxEmpNo As Long: idxEmpNo = FindColumnIndex(df, "社員番号")
+    Dim idxName As Long: idxName = FindColumnIndex(df, "氏名")
+
+    If idxEmpNo = 0 And idxName = 0 Then
+        WriteLog "  警告: シート '" & it("SheetName") & "' には社員番号も氏名もありません。スキップします。"
+        NormalizeOne = Empty: Exit Function
+    End If
+
+    ' 社員番号がない場合は氏名から生成
+    If idxEmpNo = 0 And idxName > 0 Then
+        WriteLog "  情報: シート '" & it("SheetName") & "' は氏名で管理されています。"
+        ' 氏名列の内容を社員番号列として追加(氏名列は残す)
+        df = AddColumnFromExisting(df, "社員番号", idxName)
+        idxEmpNo = FindColumnIndex(df, "社員番号")
+    End If
+
+    Dim firstRowIsHeader As Boolean: firstRowIsHeader = False
+    Dim idxEmp As Long: idxEmp = FindColumnIndex(df, "社員番号")
+    If idxEmp > 0 And UBound(df, 1) >= 2 Then
+        If Trim$(SafeStr(df(2, idxEmp))) = "社員番号" Then firstRowIsHeader = True
+    End If
+    If firstRowIsHeader Then
+        df = RemoveRow(df, 2)
+    End If
+
+    df = AddColumn(df, "__source__", it("FileName") & "/" & it("SheetName"))
+
+    NormalizeOne = df
+    Exit Function
+
+ErrorHandler:
+    WriteLog "  エラー: NormalizeOne: " & Err.Description
+    NormalizeOne = Empty
+End Function
+
+' ====== グローバルマスタ ======
+Private Sub BuildGlobalMasters(items As Collection, ByRef deptMap As Object, ByRef qualMap As Object, ByRef posMap As Object, ByRef conflicts As Object)
+    WriteLog "  → コード・名称のカウント開始 (" & items.Count & "シート)"
+    Set deptMap = CreateObject("Scripting.Dictionary"): deptMap.CompareMode = vbTextCompare
+    Set qualMap = CreateObject("Scripting.Dictionary"): qualMap.CompareMode = vbTextCompare
+    Set posMap = CreateObject("Scripting.Dictionary"): posMap.CompareMode = vbTextCompare
+
+    Dim cntDept As Object: Set cntDept = CreateObject("Scripting.Dictionary")
+    Dim cntQual As Object: Set cntQual = CreateObject("Scripting.Dictionary")
+    Dim cntPos As Object: Set cntPos = CreateObject("Scripting.Dictionary")
+
+    Dim i As Long, it As Object, df As Variant
+    For i = 1 To items.Count
+        If i Mod 20 = 0 Then
+            WriteLog "    カウント中: " & i & "/" & items.Count & " シート"
+        End If
+        Set it = items.Item(i)
+        df = NormalizeOne(it)
+        If Not IsEmpty(df) Then
+            CountCodeName cntDept, df, "所属コード", "所属名"
+            CountCodeName cntQual, df, "資格コード", "資格名"
+            CountCodeName cntPos, df, "職位コード", "職位名"
+        End If
+    Next i
+
+    WriteLog "  → マスタマップ構築中"
+    Set conflicts = CreateObject("Scripting.Dictionary")
+    conflicts.CompareMode = vbTextCompare
+    conflicts("所属マスタ矛盾") = BuildConflictAndMap(cntDept, deptMap)
+    conflicts("資格マスタ矛盾") = BuildConflictAndMap(cntQual, qualMap)
+    conflicts("職位マスタ矛盾") = BuildConflictAndMap(cntPos, posMap)
+    WriteLog "  → マスタマップ構築完了"
+End Sub
+
+Private Sub CountCodeName(ByRef counter As Object, ByVal df As Variant, ByVal codeCol As String, ByVal nameCol As String)
+    Dim idxC As Long: idxC = FindColumnIndex(df, codeCol)
+    Dim idxN As Long: idxN = FindColumnIndex(df, nameCol)
+    If idxC = 0 Then Exit Sub
+    Dim r As Long
+    For r = 2 To UBound(df, 1)
+        Dim code As String: code = Trim$(SafeStr(df(r, idxC)))
+        If code <> "" Then
+            Dim nm As String
+            If idxN > 0 Then nm = Trim$(SafeStr(df(r, idxN))) Else nm = ""
+            If Not counter.Exists(code) Then Set counter(code) = CreateObject("Scripting.Dictionary")
+            If nm <> "" Then
+                If counter(code).Exists(nm) Then
+                    counter(code)(nm) = counter(code)(nm) + 1
+                Else
+                    counter(code)(nm) = 1
+                End If
+            End If
+        End If
+    Next r
+End Sub
+
+Private Function BuildConflictAndMap(counter As Object, ByRef outMap As Object) As Variant
+    Dim out As Variant, rows As Long: rows = 1
+    ReDim out(1 To 1, 1 To 3)
+    out(1, 1) = "コード": out(1, 2) = "採用名称": out(1, 3) = "他候補"
+
+    Dim code As Variant
+    Dim k As Variant
+    For Each code In counter.keys
+        Dim nameCounts As Object: Set nameCounts = counter(code)
+        If nameCounts.Count > 0 Then
+            Dim maxC As Long: maxC = 0
+            For Each k In nameCounts.keys
+                If nameCounts(k) > maxC Then maxC = nameCounts(k)
+            Next k
+
+            Dim chosen As String: chosen = ""
+            Dim first As Boolean: first = True
+            For Each k In nameCounts.keys
+                If nameCounts(k) = maxC Then
+                    If first Then
+                        chosen = CStr(k): first = False
+                    Else
+                        If StrComp(chosen, CStr(k), vbTextCompare) > 0 Then chosen = CStr(k)
+                    End If
+                End If
+            Next k
+            outMap(code) = chosen
+
+            Dim others As String: others = ""
+            For Each k In nameCounts.keys
+                If CStr(k) <> chosen Then
+                    If others = "" Then
+                        others = CStr(k)
+                    Else
+                        others = others & " | " & CStr(k)
+                    End If
+                End If
+            Next k
+
+            rows = rows + 1
+            EnsureRows out, rows, 3
+            out(rows, 1) = code
+            out(rows, 2) = chosen
+            out(rows, 3) = Left$(others, 1000)
+        End If
+    Next code
+    BuildConflictAndMap = out
+End Function
+
+' ====== 詳細表生成 ======
+Private Function BuildDetail(big As Variant, deptMap As Object, qualMap As Object, posMap As Object) As Variant
+    WriteLog "=== BuildDetail: 詳細表生成開始 ==="
+    Dim idxEmp As Long: idxEmp = FindColumnIndex(big, "社員番号")
+    Dim idxPri As Long: idxPri = FindColumnIndex(big, "__priority__")
+    Dim rows As Long: rows = UBound(big, 1)
+    If idxEmp = 0 Then BuildDetail = Empty: Exit Function
+
+    WriteLog "  社員番号でグループ化中 (" & (rows - 1) & "行)"
+    Dim grp As Object: Set grp = CreateObject("Scripting.Dictionary")
+    grp.CompareMode = vbTextCompare
+
+    Dim r As Long, emp As String
+    For r = 2 To rows
+        emp = Trim$(SafeStr(big(r, idxEmp)))
+        If emp <> "" Then
+            If Not grp.Exists(emp) Then
+                Dim list As Collection: Set list = New Collection
+                Set grp(emp) = list
+            End If
+            grp(emp).Add r
+        End If
+    Next r
+
+    WriteLog "  ユニーク社員数: " & grp.Count
+
+    Dim out As Variant, outRows As Long: outRows = 1
+    EnsureRows out, outRows, UBound(TARGET_COLUMNS) - LBound(TARGET_COLUMNS) + 1
+    Dim c As Long
+    For c = LBound(TARGET_COLUMNS) To UBound(TARGET_COLUMNS)
+        out(1, c - LBound(TARGET_COLUMNS) + 1) = TARGET_COLUMNS(c)
+    Next c
+
+    Dim processedCount As Long: processedCount = 0
+    Dim empKey As Variant
+    For Each empKey In grp.keys
+        processedCount = processedCount + 1
+        If processedCount Mod 100 = 0 Then
+            WriteLog "  処理中: " & processedCount & "/" & grp.Count & " 社員"
+        End If
+
+        outRows = outRows + 1
+        EnsureRows out, outRows, UBound(TARGET_COLUMNS) - LBound(TARGET_COLUMNS) + 1
+        out(outRows, 1) = empKey
+
+        Dim prios() As Long: prios = CollectColumn(big, grp(empKey), idxPri)
+
+        Dim colName As String, idxCol As Long
+        For c = LBound(TARGET_COLUMNS) To UBound(TARGET_COLUMNS)
+            colName = TARGET_COLUMNS(c)
+            idxCol = FindColumnIndex(big, colName)
+            Dim vals() As Variant
+            If idxCol > 0 Then
+                vals = CollectColumn(big, grp(empKey), idxCol)
+            Else
+                ReDim vals(1 To 1): vals(1) = Empty
+            End If
+
+            Dim val As Variant
+            If DATE_COLS_LATEST.Exists(colName) Then
+                val = PickLatestDate(vals)
+            ElseIf colName = "所属名" Then
+                val = PickWithCodeMap(vals, prios, big, grp(empKey), "所属コード", deptMap)
+            ElseIf colName = "資格名" Then
+                val = PickWithCodeMap(vals, prios, big, grp(empKey), "資格コード", qualMap)
+            ElseIf colName = "職位名" Then
+                val = PickWithCodeMap(vals, prios, big, grp(empKey), "職位コード", posMap)
+            Else
+                val = PickModeWithTiebreak(vals, prios)
+            End If
+            out(outRows, c - LBound(TARGET_COLUMNS) + 1) = val
+        Next c
+    Next empKey
+
+    WriteLog "=== BuildDetail: 完了 (" & (outRows - 1) & "行生成) ==="
+    BuildDetail = out
+End Function
+
+Private Function CollectColumn(df As Variant, rowsList As Collection, idxCol As Long) As Variant
+    Dim arr() As Variant: ReDim arr(1 To rowsList.Count)
+    Dim i As Long
+    For i = 1 To rowsList.Count
+        arr(i) = df(rowsList(i), idxCol)
+    Next i
+    CollectColumn = arr
+End Function
+
+Private Function PickLatestDate(vals() As Variant) As Variant
+    Dim i As Long, bestDate As Date, hasDate As Boolean: hasDate = False
+    For i = LBound(vals) To UBound(vals)
+        If IsDate(vals(i)) Then
+            Dim d As Date: d = CDate(vals(i))
+            If Not hasDate Or d > bestDate Then
+                bestDate = d: hasDate = True
+            End If
+        ElseIf TypeName(vals(i)) = "Double" Then
+            Dim d2 As Date: d2 = CDate(vals(i))
+            If Not hasDate Or d2 > bestDate Then
+                bestDate = d2: hasDate = True
+            End If
+        End If
+    Next i
+    If hasDate Then
+        PickLatestDate = Format$(bestDate, "yyyy/mm/dd")
+    Else
+        For i = LBound(vals) To UBound(vals)
+            If Not IsEmpty(vals(i)) And Trim$(SafeStr(vals(i))) <> "" Then
+                PickLatestDate = vals(i): Exit Function
+            End If
+        Next i
+        PickLatestDate = Empty
+    End If
+End Function
+
+Private Function PickModeWithTiebreak(vals() As Variant, prios() As Long) As Variant
+    Dim i As Long
+    Dim counts As Object: Set counts = CreateObject("Scripting.Dictionary")
+    counts.CompareMode = vbTextCompare
+    For i = LBound(vals) To UBound(vals)
+        Dim s As String: s = Trim$(SafeStr(vals(i)))
+        If s <> "" Then
+            If counts.Exists(s) Then
+                counts(s) = counts(s) + 1
+            Else
+                counts(s) = 1
+            End If
+        End If
+    Next i
+    If counts.Count = 0 Then PickModeWithTiebreak = Empty: Exit Function
+
+    Dim maxC As Long: maxC = 0
+    Dim k As Variant
+    For Each k In counts.keys
+        If counts(k) > maxC Then maxC = counts(k)
+    Next k
+
+    Dim bestVal As String: bestVal = ""
+    Dim bestPrio As Long: bestPrio = 999999
+    For Each k In counts.keys
+        If counts(k) = maxC Then
+            Dim minP As Long: minP = 999999
+            For i = LBound(vals) To UBound(vals)
+                If StrComp(Trim$(SafeStr(vals(i))), CStr(k), vbTextCompare) = 0 Then
+                    If prios(i) < minP Then minP = prios(i)
+                End If
+            Next i
+            If (minP < bestPrio) Or ((minP = bestPrio) And (StrComp(bestVal, CStr(k), vbTextCompare) > 0)) Then
+                bestPrio = minP: bestVal = CStr(k)
+            End If
+        End If
+    Next k
+
+    For i = LBound(vals) To UBound(vals)
+        If StrComp(Trim$(SafeStr(vals(i))), bestVal, vbTextCompare) = 0 Then
+            PickModeWithTiebreak = vals(i): Exit Function
+        End If
+    Next i
+    PickModeWithTiebreak = bestVal
+End Function
+
+Private Function PickWithCodeMap(vals() As Variant, prios() As Long, df As Variant, rowsList As Collection, codeColName As String, codeMap As Object) As Variant
+    Dim codeIdx As Long: codeIdx = FindColumnIndex(df, codeColName)
+    Dim baseVal As Variant: baseVal = PickModeWithTiebreak(vals, prios)
+    If codeIdx = 0 Then
+        PickWithCodeMap = baseVal: Exit Function
+    End If
+    Dim codes() As Variant: codes = CollectColumn(df, rowsList, codeIdx)
+    Dim codeChosen As Variant: codeChosen = PickModeWithTiebreak(codes, prios)
+    Dim codeKey As String: codeKey = Trim$(SafeStr(codeChosen))
+    If codeKey <> "" And codeMap.Exists(codeKey) Then
+        PickWithCodeMap = codeMap(codeKey)
+    Else
+        PickWithCodeMap = baseVal
+    End If
+End Function
+
+' ====== 部署人数集計 ======
+Private Function ExtractDeptCountsFromSummary(items As Collection) As Variant
+    ExtractDeptCountsFromSummary = Empty
+End Function
+
+Private Function BuildDeptCountsFromDetail(detail As Variant) As Variant
+    WriteLog "=== BuildDeptCountsFromDetail: 部署人数集計開始 ==="
+    Dim idxEmp As Long: idxEmp = FindColumnIndex(detail, "社員番号")
+    Dim idxQual As Long: idxQual = FindColumnIndex(detail, "資格コード")
+    Dim idxDeptC As Long: idxDeptC = FindColumnIndex(detail, "所属コード")
+    Dim idxDeptN As Long: idxDeptN = FindColumnIndex(detail, "所属名")
+    If idxEmp = 0 Or idxQual = 0 Or idxDeptC = 0 Or idxDeptN = 0 Then
+        WriteLog "  警告: 必要な列が見つかりません"
+        BuildDeptCountsFromDetail = Empty: Exit Function
+    End If
+
+    Dim rows As Long: rows = UBound(detail, 1)
+    Dim r As Long, empNo As Double, qual As Variant, deptC As String, deptN As String
+
+    Dim agg As Object: Set agg = CreateObject("Scripting.Dictionary")
+    agg.CompareMode = vbTextCompare
+
+    Dim rec As Object
+
+    For r = 2 To rows
+        deptC = Trim$(SafeStr(detail(r, idxDeptC)))
+        deptN = NormalizeText(SafeStr(detail(r, idxDeptN)))
+        If deptC <> "" And deptN <> "" Then
+            empNo = val(SafeStr(detail(r, idxEmp)))
+            If empNo > 0 And empNo < 9000 Then
+                qual = detail(r, idxQual)
+                Dim qn As Long: qn = CLng(val(SafeStr(qual)))
+                If qn > 0 Then
+                    If Not agg.Exists(deptC) Then
+                        Set rec = CreateObject("Scripting.Dictionary")
+                        rec.CompareMode = vbTextCompare
+                        rec("所属名") = deptN
+                        rec("男性") = 0
+                        rec("女性") = 0
+                        rec("正社員数合計") = 0
+                        rec("パ・嘱") = 0
+                        rec("合計") = 0
+                        rec("研修生") = 0
+                        rec("総合計") = 0
+                        agg(deptC) = rec
+                    End If
+                    If qn = 1 Or qn = 2 Then
+                        agg(deptC)("正社員数合計") = agg(deptC)("正社員数合計") + 1
+                        agg(deptC)("男性") = agg(deptC)("男性") + 1
+                    ElseIf qn = 3 Then
+                        agg(deptC)("パ・嘱") = agg(deptC)("パ・嘱") + 1
+                    End If
+                    agg(deptC)("合計") = agg(deptC)("正社員数合計") + agg(deptC)("パ・嘱")
+                    agg(deptC)("総合計") = agg(deptC)("合計") + agg(deptC)("研修生")
+                End If
+            End If
+        End If
+    Next r
+
+    Dim keys As Variant: keys = agg.keys
+    Dim out As Variant, outRows As Long: outRows = 1
+    EnsureRows out, outRows, 9
+    out(1, 1) = "所属コード": out(1, 2) = "所属名": out(1, 3) = "男性": out(1, 4) = "女性": out(1, 5) = "正社員数合計"
+    out(1, 6) = "パ・嘱": out(1, 7) = "合計": out(1, 8) = "研修生": out(1, 9) = "総合計"
+    Dim i As Long
+    For i = LBound(keys) To UBound(keys)
+        outRows = outRows + 1
+        EnsureRows out, outRows, 9
+        Set rec = agg(keys(i))
+        out(outRows, 1) = keys(i)
+        out(outRows, 2) = rec("所属名")
+        out(outRows, 3) = rec("男性")
+        out(outRows, 4) = rec("女性")
+        out(outRows, 5) = rec("正社員数合計")
+        out(outRows, 6) = rec("パ・嘱")
+        out(outRows, 7) = rec("合計")
+        out(outRows, 8) = rec("研修生")
+        out(outRows, 9) = rec("総合計")
+    Next i
+
+    WriteLog "  ソート前の部署数: " & (outRows - 1)
+    BuildDeptCountsFromDetail = SortByNumericString(out, 1)
+    WriteLog "=== BuildDeptCountsFromDetail: 完了 ==="
+End Function
+
+Private Function NormalizeText(s As String) As String
+    s = Replace(s, "　", " ")
+    s = ReplaceRegex(s, "\s+", " ")
+    NormalizeText = Trim$(s)
+End Function
+
+' ====== 型整形 ======
+Private Function UnifyTypes(df As Variant) As Variant
+    Dim dateCols As Object: Set dateCols = DATE_COLS_LATEST
+    Dim intCols As Object: Set intCols = CreateObject("Scripting.Dictionary")
+    intCols.CompareMode = vbTextCompare
+    intCols("年齢") = True: intCols("NO") = True: intCols("資格コード") = True: intCols("健保コード") = True
+
+    Dim r As Long, c As Long, rows As Long, cols As Long
+    rows = UBound(df, 1): cols = UBound(df, 2)
+    For c = 1 To cols
+        Dim name As String: name = CStr(df(1, c))
+        If dateCols.Exists(name) Then
+            For r = 2 To rows
+                If IsDate(df(r, c)) Then df(r, c) = Format$(CDate(df(r, c)), "yyyy/mm/dd")
+            Next r
+        ElseIf intCols.Exists(name) Then
+            For r = 2 To rows
+                Dim s As String: s = Replace(CStr(df(r, c)), ",", "")
+                If Trim$(s) <> "" Then
+                    If IsNumeric(s) Then df(r, c) = CLng(val(s))
+                End If
+            Next r
+        End If
+    Next c
+    UnifyTypes = df
+End Function
+
+' ====== 補填 ======
+Private Function FillFromModeMap(detail As Variant, big As Variant, colName As String) As Variant
+    Dim idxD As Long: idxD = FindColumnIndex(detail, colName)
+    Dim idxEmp As Long: idxEmp = FindColumnIndex(detail, "社員番号")
+    Dim idxB As Long: idxB = FindColumnIndex(big, colName)
+    Dim idxEmpB As Long: idxEmpB = FindColumnIndex(big, "社員番号")
+    If idxD = 0 Or idxB = 0 Or idxEmp = 0 Or idxEmpB = 0 Then
+        WriteLog "    → 列 '" & colName & "' が見つかりません。スキップします。"
+        FillFromModeMap = detail: Exit Function
+    End If
+
+    WriteLog "    → モード値を計算中 (" & (UBound(big, 1) - 1) & "行)"
+    Dim modes As Object: Set modes = CreateObject("Scripting.Dictionary")
+    modes.CompareMode = vbTextCompare
+    Dim tmp As Object: Set tmp = CreateObject("Scripting.Dictionary")
+    tmp.CompareMode = vbTextCompare
+
+    Dim r As Long
+    For r = 2 To UBound(big, 1)
+        Dim emp As String: emp = Trim$(SafeStr(big(r, idxEmpB)))
+        Dim v As String: v = Trim$(SafeStr(big(r, idxB)))
+        If emp <> "" And v <> "" Then
+            If Not tmp.Exists(emp) Then Set tmp(emp) = CreateObject("Scripting.Dictionary")
+            If tmp(emp).Exists(v) Then
+                tmp(emp)(v) = tmp(emp)(v) + 1
+            Else
+                tmp(emp)(v) = 1
+            End If
+        End If
+    Next r
+
+    WriteLog "    → モード値の選択中"
+    Dim k As Variant
+    Dim mc As Long
+    Dim best As String
+    For Each k In tmp.keys
+        mc = 0
+        best = ""
+        Dim vv As Variant
+        For Each vv In tmp(k).keys
+            If tmp(k)(vv) > mc Or (tmp(k)(vv) = mc And StrComp(best, CStr(vv), vbTextCompare) > 0) Then
+                mc = tmp(k)(vv): best = CStr(vv)
+            End If
+        Next vv
+        modes(k) = best
+    Next k
+
+    WriteLog "    → 空のセルに補填中"
+    Dim fillCount As Long: fillCount = 0
+    For r = 2 To UBound(detail, 1)
+        Dim emp2 As String: emp2 = Trim$(SafeStr(detail(r, idxEmp)))
+        Dim cur As String: cur = Trim$(SafeStr(detail(r, idxD)))
+        If emp2 <> "" And cur = "" Then
+            If modes.Exists(emp2) Then
+                detail(r, idxD) = modes(emp2)
+                fillCount = fillCount + 1
+            End If
+        End If
+    Next r
+    WriteLog "    → 補填完了 (" & fillCount & "件)"
+    FillFromModeMap = detail
+End Function
+
+' ====== マスタ抽出 ======
+Private Function ExtractMaster(detail As Variant) As Variant
+    WriteLog "=== ExtractMaster: マスタ抽出開始 ==="
+    Dim keepCols As Variant
+    keepCols = Array("社員番号", "氏名", "所属コード", "所属名", "資格コード", "資格名")
+    Dim idxs() As Long: idxs = FindColumns(detail, keepCols)
+    Dim out As Variant, outRows As Long: outRows = 1
+    EnsureRows out, outRows, UBound(keepCols) - LBound(keepCols) + 1
+    Dim i As Long
+    For i = LBound(keepCols) To UBound(keepCols)
+        out(1, i - LBound(keepCols) + 1) = keepCols(i)
+    Next i
+
+    Dim seen As Object: Set seen = CreateObject("Scripting.Dictionary")
+    seen.CompareMode = vbTextCompare
+    Dim r As Long, emp As String
+    For r = 2 To UBound(detail, 1)
+        emp = Trim$(SafeStr(detail(r, FindColumnIndex(detail, "社員番号"))))
+        If emp <> "" Then
+            If Not seen.Exists(emp) Then
+                seen(emp) = True
+                outRows = outRows + 1
+                EnsureRows out, outRows, UBound(keepCols) - LBound(keepCols) + 1
+                For i = LBound(keepCols) To UBound(keepCols)
+                    out(outRows, i - LBound(keepCols) + 1) = detail(r, idxs(i - LBound(keepCols)))
+                Next i
+            End If
+        End If
+    Next r
+    WriteLog "=== ExtractMaster: 完了 (" & (outRows - 1) & "行) ==="
+    ExtractMaster = out
+End Function
+
+' ====== 並び替え(QuickSort最適化版) ======
+Private Function SortByEmpNo(df As Variant) As Variant
+    SortByEmpNo = SortByNumericString(df, FindColumnIndex(df, "社員番号"))
+End Function
+
+Private Function SortByNumericString(df As Variant, idxKey As Long) As Variant
+    If idxKey <= 0 Then SortByNumericString = df: Exit Function
+    Dim rows As Long: rows = UBound(df, 1)
+    If rows < 2 Then SortByNumericString = df: Exit Function
+
+    WriteLog "  QuickSort開始 (行数: " & (rows - 1) & ")"
+
+    Dim i As Long
+    Dim keys() As Variant: ReDim keys(2 To rows)
+    For i = 2 To rows
+        keys(i) = Array(val(SafeStr(df(i, idxKey))), SafeStr(df(i, idxKey)), i)
+    Next i
+
+    ' QuickSortでソート
+    QuickSortKeys keys, 2, rows
+
+    ' ソート済みのインデックスで並び替え
+    Dim out As Variant: out = df
+    Dim r As Long, c As Long, cols As Long: cols = UBound(df, 2)
+    Dim cur As Long: cur = 2
+    For i = 2 To rows
+        r = keys(i)(2)
+        For c = 1 To cols
+            out(cur, c) = df(r, c)
+        Next c
+        cur = cur + 1
+    Next i
+
+    WriteLog "  QuickSort完了"
+    SortByNumericString = out
+End Function
+
+' QuickSortアルゴリズム(数値と文字列の複合ソート)
+Private Sub QuickSortKeys(ByRef keys() As Variant, ByVal left As Long, ByVal right As Long)
+    If left >= right Then Exit Sub
+
+    Dim i As Long, j As Long
+    Dim pivot As Variant, temp As Variant
+
+    i = left
+    j = right
+    pivot = keys((left + right) \ 2)
+
+    Do While i <= j
+        ' 左から条件を満たさない要素を探す
+        Do While CompareKeys(keys(i), pivot) < 0
+            i = i + 1
+        Loop
+
+        ' 右から条件を満たさない要素を探す
+        Do While CompareKeys(keys(j), pivot) > 0
+            j = j - 1
+        Loop
+
+        If i <= j Then
+            ' 交換
+            temp = keys(i)
+            keys(i) = keys(j)
+            keys(j) = temp
+            i = i + 1
+            j = j - 1
+        End If
+    Loop
+
+    ' 再帰的にソート
+    If left < j Then QuickSortKeys keys, left, j
+    If i < right Then QuickSortKeys keys, i, right
+End Sub
+
+' キーの比較関数(数値優先、文字列は大文字小文字無視)
+Private Function CompareKeys(ByVal a As Variant, ByVal b As Variant) As Long
+    ' a(0) = 数値, a(1) = 文字列, a(2) = 元のインデックス
+    If a(0) < b(0) Then
+        CompareKeys = -1
+    ElseIf a(0) > b(0) Then
+        CompareKeys = 1
+    Else
+        ' 数値が同じ場合は文字列で比較
+        CompareKeys = StrComp(a(1), b(1), vbTextCompare)
+    End If
+End Function
+
+Private Function SortByColumn(df As Variant, colName As String, asc As Boolean) As Variant
+    Dim idx As Long: idx = FindColumnIndex(df, colName)
+    If idx = 0 Then SortByColumn = df: Exit Function
+
+    Dim rows As Long: rows = UBound(df, 1)
+    If rows < 2 Then SortByColumn = df: Exit Function
+
+    WriteLog "  QuickSort(列ソート)開始 (行数: " & (rows - 1) & ", 列: " & colName & ")"
+
+    ' インデックス配列を作成
+    Dim i As Long
+    Dim indices() As Variant: ReDim indices(2 To rows)
+    For i = 2 To rows
+        indices(i) = Array(SafeStr(df(i, idx)), i)
+    Next i
+
+    ' QuickSortでソート
+    QuickSortColumnKeys indices, 2, rows, asc
+
+    ' ソート済みのインデックスで並び替え
+    Dim out As Variant: out = df
+    Dim r As Long, c As Long, cols As Long: cols = UBound(df, 2)
+    Dim cur As Long: cur = 2
+    For i = 2 To rows
+        r = indices(i)(1)
+        For c = 1 To cols
+            out(cur, c) = df(r, c)
+        Next c
+        cur = cur + 1
+    Next i
+
+    WriteLog "  QuickSort(列ソート)完了"
+    SortByColumn = out
+End Function
+
+' 列ソート用QuickSort
+Private Sub QuickSortColumnKeys(ByRef indices() As Variant, ByVal left As Long, ByVal right As Long, ByVal asc As Boolean)
+    If left >= right Then Exit Sub
+
+    Dim i As Long, j As Long
+    Dim pivot As Variant, temp As Variant
+
+    i = left
+    j = right
+    pivot = indices((left + right) \ 2)
+
+    Do While i <= j
+        If asc Then
+            Do While StrComp(indices(i)(0), pivot(0), vbTextCompare) < 0
+                i = i + 1
+            Loop
+            Do While StrComp(indices(j)(0), pivot(0), vbTextCompare) > 0
+                j = j - 1
+            Loop
+        Else
+            Do While StrComp(indices(i)(0), pivot(0), vbTextCompare) > 0
+                i = i + 1
+            Loop
+            Do While StrComp(indices(j)(0), pivot(0), vbTextCompare) < 0
+                j = j - 1
+            Loop
+        End If
+
+        If i <= j Then
+            temp = indices(i)
+            indices(i) = indices(j)
+            indices(j) = temp
+            i = i + 1
+            j = j - 1
+        End If
+    Loop
+
+    If left < j Then QuickSortColumnKeys indices, left, j, asc
+    If i < right Then QuickSortColumnKeys indices, i, right, asc
+End Sub
+
+' ====== 出力 ======
+Private Sub WriteOutput(detail As Variant, master As Variant, counts As Variant, conflicts As Object, outName As String)
+    WriteLog "=== WriteOutput: 出力ファイル作成開始 ==="
+    Dim wb As Workbook: Set wb = Workbooks.Add
+    WriteTable wb, "社員詳細一覧", detail
+    WriteTable wb, "従業員マスタ", master
+    WriteDeptCountsSheet wb, "部署コード別人数算出", counts
+    Dim k As Variant
+    For Each k In conflicts.keys
+        Dim tbl As Variant: tbl = conflicts(k)
+        If Not IsEmpty(tbl) Then
+            Dim sname As String: sname = SanitizeSheetName(CStr(k))
+            WriteTable wb, sname, tbl
+        End If
+    Next k
+
+    Dim outputPath As String
+    outputPath = ThisWorkbook.Path & "\" & outName
+    WriteLog "  出力先: " & outputPath
+
+    Application.DisplayAlerts = False
+    wb.SaveAs fileName:=outputPath, FileFormat:=xlOpenXMLWorkbook
+    Application.DisplayAlerts = True
+    wb.Close SaveChanges:=False
+
+    WriteLog "=== WriteOutput: 完了 ==="
+End Sub
+
+Private Function SanitizeSheetName(s As String) As String
+    Dim t As String: t = s
+    t = ReplaceRegex(t, "[\[\]\:\*\?\/\\]", "_")
+    If Len(t) > 31 Then t = Left$(t, 31)
+    SanitizeSheetName = t
+End Function
+
+Private Sub WriteTable(wb As Workbook, sheetName As String, tbl As Variant)
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = wb.Worksheets(sheetName)
+    On Error GoTo 0
+    If ws Is Nothing Then
+        Set ws = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+        ws.Name = sheetName
+    End If
+    ws.Cells.Clear
+    If IsEmpty(tbl) Then Exit Sub
+    Dim r As Long, c As Long
+    For r = 1 To UBound(tbl, 1)
+        For c = 1 To UBound(tbl, 2)
+            ws.Cells(r, c).Value = tbl(r, c)
+        Next c
+    Next r
+    ws.Columns.AutoFit
+End Sub
+
+Private Sub WriteDeptCountsSheet(wb As Workbook, sheetName As String, tbl As Variant)
+    If IsEmpty(tbl) Then Exit Sub
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = wb.Worksheets(sheetName)
+    On Error GoTo 0
+    If ws Is Nothing Then
+        Set ws = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+        ws.Name = sheetName
+    End If
+    ws.Cells.Clear
+
+    ws.Range("A1").Value = "所属コード"
+    ws.Range("B1").Value = "所属名"
+    ws.Range("C1").Value = "正社員"
+    ws.Range("C1:D1").Merge
+    ws.Range("E1").Value = "正社員数合計"
+    ws.Range("F1").Value = "パ・嘱"
+    ws.Range("G1").Value = "合計"
+    ws.Range("H1").Value = "研修生"
+    ws.Range("I1").Value = "総合計"
+
+    ws.Range("A2").Value = ""
+    ws.Range("B2").Value = ""
+    ws.Range("C2").Value = "男性"
+    ws.Range("D2").Value = "女性"
+    ws.Range("E2").Value = ""
+    ws.Range("F2").Value = ""
+    ws.Range("G2").Value = ""
+    ws.Range("H2").Value = ""
+    ws.Range("I2").Value = ""
+
+    Dim r As Long, c As Long
+    For r = 1 To UBound(tbl, 1) - 1
+        For c = 1 To UBound(tbl, 2)
+            ws.Cells(r + 2, c).Value = tbl(r + 1, c)
+        Next c
+    Next r
+
+    ws.Columns("A").ColumnWidth = 12
+    ws.Columns("B").ColumnWidth = 30
+    ws.Columns("C:I").ColumnWidth = 12
+End Sub
+
+' ====== 小物ユーティリティ ======
+Private Function SafeStr(v As Variant) As String
+    On Error GoTo EH
+    SafeStr = CStr(v)
+    Exit Function
+EH:
+    SafeStr = ""
+End Function
+
+Private Function FindColumnIndex(df As Variant, Name As String) As Long
+    Dim c As Long
+    For c = 1 To UBound(df, 2)
+        If StrComp(CStr(df(1, c)), Name, vbTextCompare) = 0 Then
+            FindColumnIndex = c: Exit Function
+        End If
+    Next c
+    FindColumnIndex = 0
+End Function
+
+Private Function FindColumns(df As Variant, names As Variant) As Variant
+    Dim out() As Long: ReDim out(LBound(names) To UBound(names))
+    Dim i As Long
+    For i = LBound(names) To UBound(names)
+        out(i) = FindColumnIndex(df, CStr(names(i)))
+    Next i
+    FindColumns = out
+End Function
+
+Private Sub EnsureRows(ByRef arr As Variant, ByVal rowsNeeded As Long, ByVal cols As Long)
+    If IsEmpty(arr) Then
+        ReDim arr(1 To rowsNeeded, 1 To cols)
+    ElseIf UBound(arr, 1) < rowsNeeded Or UBound(arr, 2) < cols Then
+        Dim newArr() As Variant
+        ReDim newArr(1 To rowsNeeded, 1 To cols)
+        Dim r As Long, c As Long
+        For r = 1 To UBound(arr, 1)
+            For c = 1 To UBound(arr, 2)
+                newArr(r, c) = arr(r, c)
+            Next c
+        Next r
+        arr = newArr
+    End If
+End Sub
+
+Private Function SliceTable(src As Variant, r1 As Long, r2 As Long, c1 As Long, c2 As Long, header As Variant) As Variant
+    Dim out() As Variant: ReDim out(1 To (r2 - r1 + 2), 1 To (c2 - c1 + 1))
+    Dim c As Long, r As Long
+    For c = 1 To UBound(header)
+        out(1, c) = header(c)
+    Next c
+    Dim rr As Long: rr = 2
+    For r = r1 To r2
+        For c = c1 To c2
+            out(rr, c - c1 + 1) = src(r, c)
+        Next c
+        rr = rr + 1
+    Next r
+    SliceTable = out
+End Function
+
+Private Function RemoveRow(df As Variant, rowIdx As Long) As Variant
+    Dim rows As Long: rows = UBound(df, 1)
+    Dim cols As Long: cols = UBound(df, 2)
+    Dim out() As Variant: ReDim out(1 To rows - 1, 1 To cols)
+    Dim r As Long, c As Long, rr As Long: rr = 1
+    For r = 1 To rows
+        If r <> rowIdx Then
+            For c = 1 To cols
+                out(rr, c) = df(r, c)
+            Next c
+            rr = rr + 1
+        End If
+    Next r
+    RemoveRow = out
+End Function
+
+Private Function AddColumn(df As Variant, colName As String, valueDefault As Variant) As Variant
+    Dim rows As Long: rows = UBound(df, 1)
+    Dim cols As Long: cols = UBound(df, 2)
+    Dim out() As Variant: ReDim out(1 To rows, 1 To cols + 1)
+    Dim r As Long, c As Long
+    For r = 1 To rows
+        For c = 1 To cols
+            out(r, c) = df(r, c)
+        Next c
+        If r = 1 Then
+            out(r, cols + 1) = colName
+        Else
+            out(r, cols + 1) = valueDefault
+        End If
+    Next r
+    AddColumn = out
+End Function
+
+Private Function RenameColumn(df As Variant, oldName As String, newName As String) As Variant
+    Dim idx As Long: idx = FindColumnIndex(df, oldName)
+    If idx = 0 Then
+        RenameColumn = df
+        Exit Function
+    End If
+    Dim out As Variant: out = df
+    out(1, idx) = newName
+    RenameColumn = out
+End Function
+
+Private Function AddColumnFromExisting(df As Variant, newColName As String, sourceColIdx As Long) As Variant
+    Dim rows As Long: rows = UBound(df, 1)
+    Dim cols As Long: cols = UBound(df, 2)
+    Dim out() As Variant: ReDim out(1 To rows, 1 To cols + 1)
+    Dim r As Long, c As Long
+    For r = 1 To rows
+        For c = 1 To cols
+            out(r, c) = df(r, c)
+        Next c
+        If r = 1 Then
+            out(r, cols + 1) = newColName
+        Else
+            out(r, cols + 1) = df(r, sourceColIdx)
+        End If
+    Next r
+    AddColumnFromExisting = out
+End Function
+
+Private Function ConcatTables(frames As Collection, ensureCol As String) As Variant
+    WriteLog "  ConcatTables: テーブル結合開始 (" & frames.Count & "件)"
+    Dim colsMap As Object: Set colsMap = CreateObject("Scripting.Dictionary")
+    colsMap.CompareMode = vbTextCompare
+    Dim i As Long, df As Variant, c As Long
+    For i = 1 To frames.Count
+        df = frames.Item(i)
+        For c = 1 To UBound(df, 2)
+            colsMap(CStr(df(1, c))) = True
+        Next c
+    Next i
+    colsMap(ensureCol) = True
+
+    Dim allCols As Variant: allCols = colsMap.keys
+    Dim totalCols As Long: totalCols = UBound(allCols) - LBound(allCols) + 1
+
+    Dim totalRows As Long: totalRows = 1
+    For i = 1 To frames.Count
+        df = frames.Item(i)
+        totalRows = totalRows + (UBound(df, 1) - 1)
+    Next i
+
+    WriteLog "  結合後: " & (totalRows - 1) & "行 x " & totalCols & "列"
+
+    Dim out() As Variant: ReDim out(1 To totalRows, 1 To totalCols)
+
+    For c = 1 To totalCols
+        out(1, c) = allCols(c - 1 + LBound(allCols))
+    Next c
+
+    Dim r As Long: r = 2
+    For i = 1 To frames.Count
+        df = frames.Item(i)
+        Dim idxs() As Long: idxs = FindColumns(df, allCols)
+        Dim rr As Long
+        For rr = 2 To UBound(df, 1)
+            For c = 1 To totalCols
+                If idxs(c - 1 + LBound(allCols)) > 0 Then
+                    out(r, c) = df(rr, idxs(c - 1 + LBound(allCols)))
+                Else
+                    out(r, c) = Empty
+                End If
+            Next c
+            r = r + 1
+        Next rr
+    Next i
+
+    WriteLog "  ConcatTables: 完了"
+    ConcatTables = out
+End Function
+
+Private Function ConcatItems(a As Collection, b As Collection) As Collection
+    Dim c As New Collection, i As Long
+    If Not a Is Nothing Then For i = 1 To a.Count: c.Add a.Item(i): Next i
+    If Not b Is Nothing Then For i = 1 To b.Count: c.Add b.Item(i): Next i
+    Set ConcatItems = c
+End Function

@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Project specific
+output/*.xlsx
+input/*.xlsx
+input/*.xlsm
+input/*.xls
+input/.~lock.*
+処理ログ_*.txt
+*.log
+
+# Keep folder structure
+!output/.gitkeep
+!input/.gitkeep
+
+# Backup files
+*_backup.txt
+*_optimized.txt
+*_with_name_support.txt
+*_v1_old.py
+*_v2.py
+test_*.py
