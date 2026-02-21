@@ -11,10 +11,11 @@ import logging
 from datetime import datetime, timedelta
 from collections import defaultdict
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 import sys
 import traceback
 import warnings
+import threading
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 
 # ログ設定
@@ -70,6 +71,64 @@ COLUMN_SYNONYMS = {
 def log(message):
     """ログ出力"""
     logging.info(message)
+
+
+class ProgressWindow:
+    """進捗表示ウィンドウ"""
+
+    def __init__(self, title="処理中"):
+        self.root = tk.Toplevel()
+        self.root.title(title)
+        self.root.geometry("400x150")
+
+        # ウィンドウを中央に配置
+        self.root.update_idletasks()
+        x = (self.root.winfo_screenwidth() // 2) - (200)
+        y = (self.root.winfo_screenheight() // 2) - (75)
+        self.root.geometry(f"+{x}+{y}")
+
+        # 閉じるボタンを無効化
+        self.root.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        # ラベル
+        self.label = tk.Label(self.root, text="処理を開始しています...", font=("", 10))
+        self.label.pack(pady=20)
+
+        # プログレスバー
+        self.progress = ttk.Progressbar(self.root, mode='determinate', length=350)
+        self.progress.pack(pady=10)
+
+        # 詳細ラベル
+        self.detail_label = tk.Label(self.root, text="", font=("", 9))
+        self.detail_label.pack(pady=5)
+
+        self.root.update()
+
+    def update(self, current, total, message=""):
+        """進捗を更新"""
+        if total > 0:
+            percentage = (current / total) * 100
+            self.progress['value'] = percentage
+
+        if message:
+            self.label.config(text=message)
+
+        detail_text = f"{current} / {total}"
+        self.detail_label.config(text=detail_text)
+
+        self.root.update()
+
+    def set_message(self, message):
+        """メッセージのみを更新"""
+        self.label.config(text=message)
+        self.root.update()
+
+    def close(self):
+        """ウィンドウを閉じる"""
+        try:
+            self.root.destroy()
+        except:
+            pass
 
 
 def convert_excel_date(value):
@@ -533,6 +592,32 @@ def extract_retired_employees(detail_df):
     return retired_df if len(retired_df) > 0 else None
 
 
+def is_part_time_or_contract(employment_type):
+    """パート/嘱託/委託かどうかを判定"""
+    if pd.isna(employment_type):
+        return False
+
+    employment_str = str(employment_type).lower()
+
+    # パート、嘱託、委託に関連するキーワード
+    keywords = [
+        "パート", "ぱーと",
+        "嘱託", "しょくたく",
+        "委託", "いたく",
+        "研修", "けんしゅう",
+        "シルバー", "しるばー",
+        "契約", "けいやく",
+        "アルバイト", "あるばいと",
+        "臨時", "りんじ"
+    ]
+
+    for keyword in keywords:
+        if keyword in employment_str:
+            return True
+
+    return False
+
+
 def create_headcount_summary(detail_df):
     """部署別・雇用形態別の人数集計シートを作成"""
     log("人数集計シート作成中")
@@ -559,22 +644,34 @@ def create_headcount_summary(detail_df):
 
         row = {"部署": dept}
 
-        # 正社員(男性)
-        regular_male = dept_data[(dept_data["雇用形態"].astype(str).str.contains("正社員|正規", na=False)) &
-                                  (dept_data["性別"].astype(str).str.contains("男", na=False))]
+        # 正社員判定: パート/嘱託/委託以外
+        dept_data_copy = dept_data.copy()
+        dept_data_copy["is_part_time"] = dept_data_copy["雇用形態"].apply(is_part_time_or_contract)
+
+        # 正社員(男性): パート/嘱託/委託以外 かつ 男性
+        regular_male = dept_data_copy[
+            (~dept_data_copy["is_part_time"]) &
+            (dept_data_copy["性別"].astype(str).str.contains("男", na=False))
+        ]
         row["正社員(男性)"] = len(regular_male)
 
-        # 正社員(女性)
-        regular_female = dept_data[(dept_data["雇用形態"].astype(str).str.contains("正社員|正規", na=False)) &
-                                    (dept_data["性別"].astype(str).str.contains("女", na=False))]
+        # 正社員(女性): パート/嘱託/委託以外 かつ 女性
+        regular_female = dept_data_copy[
+            (~dept_data_copy["is_part_time"]) &
+            (dept_data_copy["性別"].astype(str).str.contains("女", na=False))
+        ]
         row["正社員(女性)"] = len(regular_female)
 
-        # パート/嘱職
-        part_time = dept_data[dept_data["雇用形態"].astype(str).str.contains("パート|嘱職", na=False)]
+        # パート/嘱職: パート・嘱託関連
+        part_time = dept_data_copy[
+            dept_data_copy["雇用形態"].astype(str).str.contains("パート|嘱託|嘱托|ぱーと|しょくたく|アルバイト|臨時", case=False, na=False)
+        ]
         row["パート/嘱職"] = len(part_time)
 
         # 委託/研修生/シルバー
-        other = dept_data[dept_data["雇用形態"].astype(str).str.contains("委託|研修|シルバー", na=False)]
+        other = dept_data_copy[
+            dept_data_copy["雇用形態"].astype(str).str.contains("委託|研修|シルバー|いたく|けんしゅう|しるばー", case=False, na=False)
+        ]
         row["委託/研修生/シルバー"] = len(other)
 
         # 合計
@@ -594,6 +691,12 @@ def create_headcount_summary(detail_df):
     summary_df = pd.DataFrame(summary_rows)
 
     log(f"  人数集計シート作成完了: {len(summary_df)}行")
+
+    # デバッグ情報
+    log(f"  正社員(男性)合計: {total_row['正社員(男性)']}")
+    log(f"  正社員(女性)合計: {total_row['正社員(女性)']}")
+    log(f"  パート/嘱職合計: {total_row['パート/嘱職']}")
+    log(f"  委託/研修生/シルバー合計: {total_row['委託/研修生/シルバー']}")
 
     return summary_df
 
@@ -643,78 +746,100 @@ def run_initial_build():
         messagebox.showwarning("警告", "inputフォルダにExcelファイルがありません")
         return
 
-    log(f"選択ファイル数: {len(excel_files)}")
-    log("=== ファイル読み込み開始 ===")
+    # 進捗ウィンドウを作成
+    progress = ProgressWindow("新規マスタ作成中")
 
-    all_dfs = []
-    for idx, file_path in enumerate(excel_files, 1):
-        log(f"ファイル ({idx}/{len(excel_files)}): {file_path.name}")
-        dfs = read_excel_all_sheets(file_path)
-        all_dfs.extend(dfs)
+    try:
+        log(f"選択ファイル数: {len(excel_files)}")
+        log("=== ファイル読み込み開始 ===")
 
-    log(f"=== 読み込み完了 ({len(all_dfs)}シート) ===")
+        progress.set_message("Excelファイルを読み込んでいます...")
 
-    if not all_dfs:
-        messagebox.showwarning("警告", "処理可能なシートがありませんでした")
-        return
+        all_dfs = []
+        for idx, file_path in enumerate(excel_files, 1):
+            progress.update(idx, len(excel_files), f"ファイル読み込み中: {file_path.name}")
+            log(f"ファイル ({idx}/{len(excel_files)}): {file_path.name}")
+            dfs = read_excel_all_sheets(file_path)
+            all_dfs.extend(dfs)
 
-    # グローバルマスタ構築
-    dept_map, qual_map, pos_map = build_master_maps(all_dfs)
+        log(f"=== 読み込み完了 ({len(all_dfs)}シート) ===")
 
-    # データ統合
-    log("=== データ統合開始 ===")
-    combined = consolidate_data(all_dfs, priority=10)
+        if not all_dfs:
+            progress.close()
+            messagebox.showwarning("警告", "処理可能なシートがありませんでした")
+            return
 
-    # 詳細表生成（全員分）
-    detail_df_all = build_detail_table(combined, dept_map, qual_map, pos_map)
+        # グローバルマスタ構築
+        progress.set_message("グローバルマスタを構築しています...")
+        dept_map, qual_map, pos_map = build_master_maps(all_dfs)
 
-    # 在職者のみ抽出（詳細シート用）
-    detail_df = extract_active_employees(detail_df_all)
+        # データ統合
+        progress.set_message("データを統合しています...")
+        log("=== データ統合開始 ===")
+        combined = consolidate_data(all_dfs, priority=10)
 
-    # マスタ表抽出
-    master_df = extract_master_table(detail_df_all)
+        # 詳細表生成（全員分）
+        progress.set_message("詳細表を生成しています...")
+        detail_df_all = build_detail_table(combined, dept_map, qual_map, pos_map)
 
-    # 退職者抽出
-    retired_df = extract_retired_employees(detail_df_all)
+        # 在職者のみ抽出（詳細シート用）
+        progress.set_message("在職者を抽出しています...")
+        detail_df = extract_active_employees(detail_df_all)
 
-    # 人数集計シート作成
-    headcount_df = create_headcount_summary(detail_df_all)
+        # マスタ表抽出
+        progress.set_message("マスタ表を作成しています...")
+        master_df = extract_master_table(detail_df_all)
 
-    # 出力
-    output_dir = Path("output")
-    output_dir.mkdir(exist_ok=True)
+        # 退職者抽出
+        progress.set_message("退職者を抽出しています...")
+        retired_df = extract_retired_employees(detail_df_all)
 
-    output_filename = f"統合ファイル_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    output_path = output_dir / output_filename
+        # 人数集計シート作成
+        progress.set_message("人数集計シートを作成しています...")
+        headcount_df = create_headcount_summary(detail_df_all)
 
-    log(f"出力ファイル作成中: {output_filename}")
+        # 出力
+        output_dir = Path("output")
+        output_dir.mkdir(exist_ok=True)
 
-    with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-        # 詳細シート（在職者のみ）
-        detail_df.to_excel(writer, sheet_name='詳細', index=False)
-        # マスタシート
-        master_df.to_excel(writer, sheet_name='マスタ', index=False)
-        # 退職者シート
+        output_filename = f"統合ファイル_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        output_path = output_dir / output_filename
+
+        progress.set_message("Excelファイルを書き込んでいます...")
+        log(f"出力ファイル作成中: {output_filename}")
+
+        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+            # 詳細シート（在職者のみ）
+            detail_df.to_excel(writer, sheet_name='詳細', index=False)
+            # マスタシート
+            master_df.to_excel(writer, sheet_name='マスタ', index=False)
+            # 退職者シート
+            if retired_df is not None:
+                retired_df.to_excel(writer, sheet_name='退職者', index=False)
+            # 人数集計シート
+            if headcount_df is not None:
+                headcount_df.to_excel(writer, sheet_name='人数集計', index=False)
+
+        progress.close()
+
+        log(f"出力ファイル: {output_path}")
+        log("=========================================")
+        log("=== 処理完了 ===")
+        log("=========================================")
+
+        result_msg = f"処理が完了しました\n\n出力ファイル:\n{output_path}\n\n"
+        result_msg += f"詳細(在職者): {len(detail_df)}行\n"
+        result_msg += f"マスタ: {len(master_df)}行\n"
         if retired_df is not None:
-            retired_df.to_excel(writer, sheet_name='退職者', index=False)
-        # 人数集計シート
+            result_msg += f"退職者: {len(retired_df)}行\n"
         if headcount_df is not None:
-            headcount_df.to_excel(writer, sheet_name='人数集計', index=False)
+            result_msg += f"人数集計: {len(headcount_df)}部署"
 
-    log(f"出力ファイル: {output_path}")
-    log("=========================================")
-    log("=== 処理完了 ===")
-    log("=========================================")
+        messagebox.showinfo("完了", result_msg)
 
-    result_msg = f"処理が完了しました\n\n出力ファイル:\n{output_path}\n\n"
-    result_msg += f"詳細(在職者): {len(detail_df)}行\n"
-    result_msg += f"マスタ: {len(master_df)}行\n"
-    if retired_df is not None:
-        result_msg += f"退職者: {len(retired_df)}行\n"
-    if headcount_df is not None:
-        result_msg += f"人数集計: {len(headcount_df)}部署"
-
-    messagebox.showinfo("完了", result_msg)
+    except Exception as e:
+        progress.close()
+        raise
 
 
 def run_add_excel():
@@ -742,79 +867,100 @@ def run_add_excel():
         messagebox.showwarning("警告", "inputフォルダに追加するExcelファイルがありません")
         return
 
-    log(f"追加ファイル数: {len(excel_files)}")
-    log("=== 追加ファイル読み込み開始 ===")
+    # 進捗ウィンドウを作成
+    progress = ProgressWindow("Excel追加中")
 
-    all_dfs = []
-    # 既存マスタを最優先で追加（priority=0）
-    existing_df["__priority__"] = 0
-    all_dfs.append(existing_df)
+    try:
+        log(f"追加ファイル数: {len(excel_files)}")
+        log("=== 追加ファイル読み込み開始 ===")
 
-    # 新規ファイルを読み込み（priority=10）
-    for idx, file_path in enumerate(excel_files, 1):
-        log(f"ファイル ({idx}/{len(excel_files)}): {file_path.name}")
-        dfs = read_excel_all_sheets(file_path)
-        all_dfs.extend(dfs)
+        progress.set_message("既存マスタを読み込んでいます...")
 
-    log(f"=== 読み込み完了 ({len(all_dfs)}シート、既存マスタ含む) ===")
+        all_dfs = []
+        # 既存マスタを最優先で追加（priority=0）
+        existing_df["__priority__"] = 0
+        all_dfs.append(existing_df)
 
-    # グローバルマスタ構築
-    dept_map, qual_map, pos_map = build_master_maps(all_dfs)
+        # 新規ファイルを読み込み（priority=10）
+        for idx, file_path in enumerate(excel_files, 1):
+            progress.update(idx, len(excel_files), f"ファイル読み込み中: {file_path.name}")
+            log(f"ファイル ({idx}/{len(excel_files)}): {file_path.name}")
+            dfs = read_excel_all_sheets(file_path)
+            all_dfs.extend(dfs)
 
-    # データ統合
-    log("=== データ統合開始 ===")
-    combined = consolidate_data(all_dfs, priority=10)
+        log(f"=== 読み込み完了 ({len(all_dfs)}シート、既存マスタ含む) ===")
 
-    # 詳細表生成（全員分）
-    detail_df_all = build_detail_table(combined, dept_map, qual_map, pos_map)
+        # グローバルマスタ構築
+        progress.set_message("グローバルマスタを構築しています...")
+        dept_map, qual_map, pos_map = build_master_maps(all_dfs)
 
-    # 在職者のみ抽出（詳細シート用）
-    detail_df = extract_active_employees(detail_df_all)
+        # データ統合
+        progress.set_message("データを統合しています...")
+        log("=== データ統合開始 ===")
+        combined = consolidate_data(all_dfs, priority=10)
 
-    # マスタ表抽出
-    master_df = extract_master_table(detail_df_all)
+        # 詳細表生成（全員分）
+        progress.set_message("詳細表を生成しています...")
+        detail_df_all = build_detail_table(combined, dept_map, qual_map, pos_map)
 
-    # 退職者抽出
-    retired_df = extract_retired_employees(detail_df_all)
+        # 在職者のみ抽出（詳細シート用）
+        progress.set_message("在職者を抽出しています...")
+        detail_df = extract_active_employees(detail_df_all)
 
-    # 人数集計シート作成
-    headcount_df = create_headcount_summary(detail_df_all)
+        # マスタ表抽出
+        progress.set_message("マスタ表を作成しています...")
+        master_df = extract_master_table(detail_df_all)
 
-    # 出力
-    output_dir = Path("output")
-    output_dir.mkdir(exist_ok=True)
+        # 退職者抽出
+        progress.set_message("退職者を抽出しています...")
+        retired_df = extract_retired_employees(detail_df_all)
 
-    output_filename = f"統合ファイル_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    output_path = output_dir / output_filename
+        # 人数集計シート作成
+        progress.set_message("人数集計シートを作成しています...")
+        headcount_df = create_headcount_summary(detail_df_all)
 
-    log(f"出力ファイル作成中: {output_filename}")
+        # 出力
+        output_dir = Path("output")
+        output_dir.mkdir(exist_ok=True)
 
-    with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-        # 詳細シート（在職者のみ）
-        detail_df.to_excel(writer, sheet_name='詳細', index=False)
-        # マスタシート
-        master_df.to_excel(writer, sheet_name='マスタ', index=False)
-        # 退職者シート
+        output_filename = f"統合ファイル_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        output_path = output_dir / output_filename
+
+        progress.set_message("Excelファイルを書き込んでいます...")
+        log(f"出力ファイル作成中: {output_filename}")
+
+        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+            # 詳細シート（在職者のみ）
+            detail_df.to_excel(writer, sheet_name='詳細', index=False)
+            # マスタシート
+            master_df.to_excel(writer, sheet_name='マスタ', index=False)
+            # 退職者シート
+            if retired_df is not None:
+                retired_df.to_excel(writer, sheet_name='退職者', index=False)
+            # 人数集計シート
+            if headcount_df is not None:
+                headcount_df.to_excel(writer, sheet_name='人数集計', index=False)
+
+        progress.close()
+
+        log(f"出力ファイル: {output_path}")
+        log("=========================================")
+        log("=== 処理完了 ===")
+        log("=========================================")
+
+        result_msg = f"Excel追加処理が完了しました\n\n出力ファイル:\n{output_path}\n\n"
+        result_msg += f"詳細(在職者): {len(detail_df)}行\n"
+        result_msg += f"マスタ: {len(master_df)}行\n"
         if retired_df is not None:
-            retired_df.to_excel(writer, sheet_name='退職者', index=False)
-        # 人数集計シート
+            result_msg += f"退職者: {len(retired_df)}行\n"
         if headcount_df is not None:
-            headcount_df.to_excel(writer, sheet_name='人数集計', index=False)
+            result_msg += f"人数集計: {len(headcount_df)}部署"
 
-    log(f"出力ファイル: {output_path}")
-    log("=========================================")
-    log("=== 処理完了 ===")
-    log("=========================================")
+        messagebox.showinfo("完了", result_msg)
 
-    result_msg = f"Excel追加処理が完了しました\n\n出力ファイル:\n{output_path}\n\n"
-    result_msg += f"詳細(在職者): {len(detail_df)}行\n"
-    result_msg += f"マスタ: {len(master_df)}行\n"
-    if retired_df is not None:
-        result_msg += f"退職者: {len(retired_df)}行\n"
-    if headcount_df is not None:
-        result_msg += f"人数集計: {len(headcount_df)}部署"
-
-    messagebox.showinfo("完了", result_msg)
+    except Exception as e:
+        progress.close()
+        raise
 
 
 def select_mode():
