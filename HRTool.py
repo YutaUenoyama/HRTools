@@ -660,7 +660,7 @@ def select_mode():
     """モード選択ダイアログ"""
     root = tk.Tk()
     root.title("HRTool - モード選択")
-    root.geometry("400x200")
+    root.geometry("400x250")
 
     # ウィンドウを中央に配置
     root.update_idletasks()
@@ -672,18 +672,23 @@ def select_mode():
 
     def on_new_master():
         selected_mode[0] = "new"
-        root.quit()
         root.destroy()
 
     def on_add_excel():
         selected_mode[0] = "add"
-        root.quit()
         root.destroy()
 
     def on_cancel():
         selected_mode[0] = "cancel"
-        root.quit()
         root.destroy()
+
+    def on_close():
+        """×ボタンでウィンドウを閉じたとき"""
+        selected_mode[0] = "cancel"
+        root.destroy()
+
+    # ×ボタンの処理を設定
+    root.protocol("WM_DELETE_WINDOW", on_close)
 
     # ラベル
     label = tk.Label(root, text="処理モードを選択してください", font=("", 12))
@@ -701,7 +706,8 @@ def select_mode():
     btn_cancel = tk.Button(root, text="キャンセル", command=on_cancel, width=30)
     btn_cancel.pack(pady=5)
 
-    root.mainloop()
+    # mainloopの代わりにwait_windowを使用（より確実に終了）
+    root.wait_window()
 
     return selected_mode[0]
 
@@ -727,12 +733,35 @@ def main():
         else:
             log("ユーザーがキャンセルしました")
 
+        # 正常終了
+        log("プログラムを終了します")
+        sys.exit(0)
+
     except Exception as e:
         error_msg = f"エラーが発生しました:\n{e}\n\n{traceback.format_exc()}"
         log(f"=== エラー発生 ===")
         log(error_msg)
-        messagebox.showerror("エラー", error_msg)
+
+        # エラーダイアログを表示
+        try:
+            root = tk.Tk()
+            root.withdraw()  # メインウィンドウを非表示
+            messagebox.showerror("エラー", error_msg)
+            root.destroy()
+        except:
+            pass  # ダイアログ表示に失敗しても続行
+
+        # 異常終了
         sys.exit(1)
+
+    finally:
+        # クリーンアップ（念のため）
+        try:
+            # tkinterのクリーンアップ
+            for widget in tk._default_root.winfo_children() if tk._default_root else []:
+                widget.destroy()
+        except:
+            pass
 
 
 if __name__ == "__main__":
