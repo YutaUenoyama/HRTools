@@ -43,28 +43,28 @@ DATE_COLUMNS = ["生年月日", "入社年月日", "退職年月日"]
 
 # 列名の同義語マッピング（拡張版）
 COLUMN_SYNONYMS = {
-    "社員番号": ["社員番号", "社員No", "社員NO", "社員ＮＯ", "社員ｎｏ", "emp_no", "従業員番号", "職員番号", "社員コード"],
-    "氏名": ["氏名", "名前", "社員名", "name", "Name", "NAME", "氏　名", "社員氏名", "職員名"],
-    "フリガナ": ["フリガナ", "カナ", "フリガナ氏名", "ふりがな", "フリガナ名", "かな", "カナ氏名"],
-    "生年月日": ["生年月日", "生年月日（西暦）", "誕生日", "生年月日(西暦)", "生まれ", "年月日"],
-    "性別": ["性別", "男女", "性"],
-    "入社年月日": ["入社年月日", "入社日", "入社年月日（西暦）", "入社年月日(西暦)", "入社", "採用日", "入社年月"],
-    "所属コード": ["所属コード", "部署コード", "dept_code", "所属ｺｰﾄﾞ", "部署ｺｰﾄﾞ", "組織コード"],
-    "所属名": ["所属名", "部署名", "所属", "部署", "組織名", "所属部署", "配属先"],
-    "資格コード": ["資格コード", "grade_code", "資格ｺｰﾄﾞ", "等級コード", "等級"],
-    "資格名": ["資格名", "資格", "等級名", "職能資格"],
-    "職位コード": ["職位コード", "position_code", "職位ｺｰﾄﾞ", "役職コード"],
-    "職位名": ["職位名", "職位", "役職名", "役職"],
-    "健保コード": ["健保コード", "health_code", "健保ｺｰﾄﾞ", "保険コード"],
-    "NO": ["NO", "No", "番号", "no", "№", "ＮＯ"],
-    "雇用形態": ["雇用形態", "雇用区分", "雇用", "勤務形態", "就業形態"],
-    "退職年月日": ["退職年月日", "退職日", "退職年月日（西暦）", "退職年月日(西暦)", "退職", "離職日"],
-    "学校名": ["学校名", "出身校", "最終学歴校"],
-    "学科名": ["学科名", "学部学科", "専攻"],
-    "勤務地": ["勤務地", "勤務場所", "事業所"],
-    "本部": ["本部", "本部名"],
-    "所属部": ["所属部", "部", "部名"],
-    "昇給日": ["昇給日", "昇給年月日", "昇給月日"]
+    "社員番号": ["社員番号", "社員No", "社員NO", "社員ＮＯ", "社員ｎｏ", "社員no", "emp_no", "従業員番号", "職員番号", "社員コード", "社員ｺｰﾄﾞ", "Employee No", "EMP_NO"],
+    "氏名": ["氏名", "名前", "社員名", "name", "Name", "NAME", "氏　名", "社員氏名", "職員名", "姓名", "フルネーム"],
+    "フリガナ": ["フリガナ", "カナ", "フリガナ氏名", "ふりがな", "フリガナ名", "かな", "カナ氏名", "フリガナ名前", "ヨミガナ"],
+    "生年月日": ["生年月日", "生年月日（西暦）", "誕生日", "生年月日(西暦)", "生まれ", "年月日", "生年月日 (西暦)", "birth_date", "BIRTH_DATE", "誕生年月日"],
+    "性別": ["性別", "男女", "性", "gender", "Gender", "GENDER", "性別区分"],
+    "入社年月日": ["入社年月日", "入社日", "入社年月日（西暦）", "入社年月日(西暦)", "入社", "採用日", "入社年月", "入社年月日 (西暦)", "hire_date", "入社年月日 ", "採用年月日"],
+    "所属コード": ["所属コード", "部署コード", "dept_code", "所属ｺｰﾄﾞ", "部署ｺｰﾄﾞ", "組織コード", "所属CD", "部署CD", "DEPT_CODE"],
+    "所属名": ["所属名", "部署名", "所属", "部署", "組織名", "所属部署", "配属先", "dept_name", "DEPT_NAME"],
+    "資格コード": ["資格コード", "grade_code", "資格ｺｰﾄﾞ", "等級コード", "等級", "資格CD", "GRADE_CODE"],
+    "資格名": ["資格名", "資格", "等級名", "職能資格", "grade_name", "GRADE_NAME"],
+    "職位コード": ["職位コード", "position_code", "職位ｺｰﾄﾞ", "役職コード", "職位CD", "POSITION_CODE"],
+    "職位名": ["職位名", "職位", "役職名", "役職", "position_name", "POSITION_NAME"],
+    "健保コード": ["健保コード", "health_code", "健保ｺｰﾄﾞ", "保険コード", "健保CD", "HEALTH_CODE"],
+    "NO": ["NO", "No", "番号", "no", "№", "ＮＯ", "No.", "NUMBER"],
+    "雇用形態": ["雇用形態", "雇用区分", "雇用", "勤務形態", "就業形態", "雇用形態区分", "employment_type", "EMPLOYMENT_TYPE"],
+    "退職年月日": ["退職年月日", "退職日", "退職年月日（西暦）", "退職年月日(西暦)", "退職", "離職日", "退職年月日 (西暦)", "retire_date", "RETIRE_DATE", "退社日"],
+    "学校名": ["学校名", "出身校", "最終学歴校", "学校", "出身学校"],
+    "学科名": ["学科名", "学部学科", "専攻", "学科", "専攻名"],
+    "勤務地": ["勤務地", "勤務場所", "事業所", "勤務先", "配属先", "work_location", "WORK_LOCATION"],
+    "本部": ["本部", "本部名", "本部組織"],
+    "所属部": ["所属部", "部", "部名", "部署"],
+    "昇給日": ["昇給日", "昇給年月日", "昇給月日", "昇給日付"]
 }
 
 
@@ -190,6 +190,29 @@ def calculate_years_of_service(hire_date_str):
     return f"{years}年" if years >= 0 else ""
 
 
+def normalize_gender(gender_value):
+    """性別の表記ゆれを正規化"""
+    if pd.isna(gender_value):
+        return ""
+
+    gender_str = str(gender_value).strip().upper()
+
+    # 男性のパターン
+    male_patterns = ["男", "男性", "M", "MALE", "オトコ", "ダンセイ"]
+    for pattern in male_patterns:
+        if pattern in gender_str:
+            return "男性"
+
+    # 女性のパターン
+    female_patterns = ["女", "女性", "F", "FEMALE", "オンナ", "ジョセイ"]
+    for pattern in female_patterns:
+        if pattern in gender_str:
+            return "女性"
+
+    # マッチしない場合は元の値を返す
+    return str(gender_value).strip()
+
+
 def normalize_column_names(columns):
     """列名を正規化してカノニカル名に変換"""
     normalized = []
@@ -293,10 +316,19 @@ def normalize_sheet(df, sheet_name, file_name):
         recognized_cols = []
         for orig, norm in zip(original_header, header):
             if norm in TARGET_COLUMNS:
-                recognized_cols.append(f"{orig} → {norm}")
+                recognized_cols.append(f"'{orig}' → {norm}")
 
         if recognized_cols:
             log(f"  認識された列: {', '.join(recognized_cols)}")
+
+        # 認識されなかった列も確認
+        unrecognized_cols = []
+        for orig, norm in zip(original_header, header):
+            if norm not in TARGET_COLUMNS and not norm.startswith("col_"):
+                unrecognized_cols.append(f"'{orig}'")
+
+        if unrecognized_cols and len(unrecognized_cols) <= 5:
+            log(f"  認識されなかった列: {', '.join(unrecognized_cols)}")
 
         # データ行はヘッダーの次から
         data_df = df.iloc[header_row_idx + 1:].copy()
@@ -524,6 +556,11 @@ def build_detail_table(combined, dept_map, qual_map, pos_map):
     else:
         detail_df["勤続年数"] = ""
 
+    # 性別を正規化
+    if "性別" in detail_df.columns:
+        detail_df["性別"] = detail_df["性別"].apply(normalize_gender)
+        log(f"  性別の正規化完了")
+
     # 社員番号でソート（文字列として統一）
     detail_df["社員番号"] = detail_df["社員番号"].astype(str)
     detail_df = detail_df.sort_values("社員番号").reset_index(drop=True)
@@ -599,16 +636,18 @@ def is_part_time_or_contract(employment_type):
 
     employment_str = str(employment_type).lower()
 
-    # パート、嘱託、委託に関連するキーワード
+    # パート、嘱託、委託に関連するキーワード(拡張版)
     keywords = [
-        "パート", "ぱーと",
-        "嘱託", "しょくたく",
+        "パート", "ぱーと", "part", "part-time",
+        "嘱託", "しょくたく", "嘱托",
         "委託", "いたく",
         "研修", "けんしゅう",
-        "シルバー", "しるばー",
-        "契約", "けいやく",
-        "アルバイト", "あるばいと",
-        "臨時", "りんじ"
+        "シルバー", "しるばー", "silver",
+        "契約", "けいやく", "contract",
+        "アルバイト", "あるばいと", "バイト", "ばいと",
+        "臨時", "りんじ", "temp",
+        "派遣", "はけん",
+        "非正規", "ひせいき"
     ]
 
     for keyword in keywords:
@@ -648,17 +687,20 @@ def create_headcount_summary(detail_df):
         dept_data_copy = dept_data.copy()
         dept_data_copy["is_part_time"] = dept_data_copy["雇用形態"].apply(is_part_time_or_contract)
 
+        # 性別を正規化（念のため再度適用）
+        dept_data_copy["性別_normalized"] = dept_data_copy["性別"].apply(normalize_gender)
+
         # 正社員(男性): パート/嘱託/委託以外 かつ 男性
         regular_male = dept_data_copy[
             (~dept_data_copy["is_part_time"]) &
-            (dept_data_copy["性別"].astype(str).str.contains("男", na=False))
+            (dept_data_copy["性別_normalized"].str.contains("男", na=False))
         ]
         row["正社員(男性)"] = len(regular_male)
 
         # 正社員(女性): パート/嘱託/委託以外 かつ 女性
         regular_female = dept_data_copy[
             (~dept_data_copy["is_part_time"]) &
-            (dept_data_copy["性別"].astype(str).str.contains("女", na=False))
+            (dept_data_copy["性別_normalized"].str.contains("女", na=False))
         ]
         row["正社員(女性)"] = len(regular_female)
 
