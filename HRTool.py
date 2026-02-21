@@ -33,7 +33,8 @@ logging.basicConfig(
 TARGET_COLUMNS = [
     "社員番号", "氏名", "フリガナ", "生年月日", "性別", "入社年月日",
     "所属コード", "所属名", "資格コード", "資格名", "職位コード", "職位名",
-    "健保コード", "NO", "雇用形態", "退職年月日"
+    "健保コード", "NO", "雇用形態", "退職年月日",
+    "学校名", "学科名", "勤務地", "本部", "所属部", "昇給日"
 ]
 
 # 日付列のリスト
@@ -56,7 +57,13 @@ COLUMN_SYNONYMS = {
     "健保コード": ["健保コード", "health_code", "健保ｺｰﾄﾞ", "保険コード"],
     "NO": ["NO", "No", "番号", "no", "№", "ＮＯ"],
     "雇用形態": ["雇用形態", "雇用区分", "雇用", "勤務形態", "就業形態"],
-    "退職年月日": ["退職年月日", "退職日", "退職年月日（西暦）", "退職年月日(西暦)", "退職", "離職日"]
+    "退職年月日": ["退職年月日", "退職日", "退職年月日（西暦）", "退職年月日(西暦)", "退職", "離職日"],
+    "学校名": ["学校名", "出身校", "最終学歴校"],
+    "学科名": ["学科名", "学部学科", "専攻"],
+    "勤務地": ["勤務地", "勤務場所", "事業所"],
+    "本部": ["本部", "本部名"],
+    "所属部": ["所属部", "部", "部名"],
+    "昇給日": ["昇給日", "昇給年月日", "昇給月日"]
 }
 
 
@@ -86,6 +93,42 @@ def convert_excel_date(value):
 
     # 文字列の場合はそのまま
     return str(value)
+
+
+def parse_date_string(date_str):
+    """日付文字列をdatetimeオブジェクトに変換"""
+    if not date_str or pd.isna(date_str) or str(date_str).strip() == "":
+        return None
+
+    try:
+        # YYYY/MM/DD形式
+        if isinstance(date_str, str) and '/' in date_str:
+            parts = date_str.split('/')
+            if len(parts) == 3:
+                return datetime(int(parts[0]), int(parts[1]), int(parts[2]))
+        # datetimeオブジェクトの場合
+        if isinstance(date_str, (pd.Timestamp, datetime)):
+            return date_str
+    except:
+        pass
+
+    return None
+
+
+def calculate_years_of_service(hire_date_str):
+    """勤続年数を計算"""
+    hire_date = parse_date_string(hire_date_str)
+    if not hire_date:
+        return ""
+
+    today = datetime.now()
+    years = today.year - hire_date.year
+
+    # 誕生日がまだ来ていない場合は1を引く
+    if (today.month, today.day) < (hire_date.month, hire_date.day):
+        years -= 1
+
+    return f"{years}年" if years >= 0 else ""
 
 
 def normalize_column_names(columns):
@@ -416,6 +459,12 @@ def build_detail_table(combined, dept_map, qual_map, pos_map):
 
     detail_df = pd.DataFrame(result_rows)
 
+    # 勤続年数を計算
+    if "入社年月日" in detail_df.columns:
+        detail_df["勤続年数"] = detail_df["入社年月日"].apply(calculate_years_of_service)
+    else:
+        detail_df["勤続年数"] = ""
+
     # 社員番号でソート（文字列として統一）
     detail_df["社員番号"] = detail_df["社員番号"].astype(str)
     detail_df = detail_df.sort_values("社員番号").reset_index(drop=True)
@@ -433,16 +482,35 @@ def build_detail_table(combined, dept_map, qual_map, pos_map):
     return detail_df
 
 
+def extract_active_employees(detail_df):
+    """在職者のみを抽出（退職者を除外）"""
+    log("在職者抽出中")
+
+    if "退職年月日" not in detail_df.columns:
+        log("  退職年月日列が存在しません。全員を在職者として扱います。")
+        return detail_df.copy()
+
+    # 退職年月日が空のレコードを在職者とする
+    active_df = detail_df[detail_df["退職年月日"].astype(str).str.strip() == ""].copy()
+
+    log(f"  在職者抽出完了: {len(active_df)}行")
+
+    return active_df
+
+
 def extract_master_table(detail_df):
-    """マスタ表を抽出"""
+    """マスタ表を抽出（在職者のみ）"""
     log("マスタ表抽出中")
 
-    master_columns = ["社員番号", "氏名", "フリガナ", "生年月日", "性別", "入社年月日", "退職年月日"]
+    # 在職者のみ抽出
+    active_df = extract_active_employees(detail_df)
+
+    master_columns = ["社員番号", "氏名", "フリガナ", "生年月日", "性別", "入社年月日", "勤続年数"]
 
     # 列が存在するかチェック
-    existing_cols = [col for col in master_columns if col in detail_df.columns]
+    existing_cols = [col for col in master_columns if col in active_df.columns]
 
-    master_df = detail_df[existing_cols].copy()
+    master_df = active_df[existing_cols].copy()
 
     log(f"  マスタ表抽出完了: {len(master_df)}行")
 
@@ -463,6 +531,71 @@ def extract_retired_employees(detail_df):
     log(f"  退職者抽出完了: {len(retired_df)}行")
 
     return retired_df if len(retired_df) > 0 else None
+
+
+def create_headcount_summary(detail_df):
+    """部署別・雇用形態別の人数集計シートを作成"""
+    log("人数集計シート作成中")
+
+    # 在職者のみ抽出
+    active_df = extract_active_employees(detail_df)
+
+    if len(active_df) == 0:
+        log("  在職者がいません。人数集計シートはスキップします。")
+        return None
+
+    # 必要な列が存在するか確認
+    if "所属名" not in active_df.columns or "雇用形態" not in active_df.columns or "性別" not in active_df.columns:
+        log("  必要な列（所属名、雇用形態、性別）が不足しています。人数集計シートはスキップします。")
+        return None
+
+    # 所属部ごとに集計
+    dept_col = "所属部" if "所属部" in active_df.columns else "所属名"
+
+    summary_rows = []
+
+    for dept in sorted(active_df[dept_col].unique()):
+        dept_data = active_df[active_df[dept_col] == dept]
+
+        row = {"部署": dept}
+
+        # 正社員(男性)
+        regular_male = dept_data[(dept_data["雇用形態"].astype(str).str.contains("正社員|正規", na=False)) &
+                                  (dept_data["性別"].astype(str).str.contains("男", na=False))]
+        row["正社員(男性)"] = len(regular_male)
+
+        # 正社員(女性)
+        regular_female = dept_data[(dept_data["雇用形態"].astype(str).str.contains("正社員|正規", na=False)) &
+                                    (dept_data["性別"].astype(str).str.contains("女", na=False))]
+        row["正社員(女性)"] = len(regular_female)
+
+        # パート/嘱職
+        part_time = dept_data[dept_data["雇用形態"].astype(str).str.contains("パート|嘱職", na=False)]
+        row["パート/嘱職"] = len(part_time)
+
+        # 委託/研修生/シルバー
+        other = dept_data[dept_data["雇用形態"].astype(str).str.contains("委託|研修|シルバー", na=False)]
+        row["委託/研修生/シルバー"] = len(other)
+
+        # 合計
+        row["合計"] = len(dept_data)
+
+        summary_rows.append(row)
+
+    # 全体合計行を追加
+    total_row = {"部署": "【全体合計】"}
+    total_row["正社員(男性)"] = sum(r["正社員(男性)"] for r in summary_rows)
+    total_row["正社員(女性)"] = sum(r["正社員(女性)"] for r in summary_rows)
+    total_row["パート/嘱職"] = sum(r["パート/嘱職"] for r in summary_rows)
+    total_row["委託/研修生/シルバー"] = sum(r["委託/研修生/シルバー"] for r in summary_rows)
+    total_row["合計"] = sum(r["合計"] for r in summary_rows)
+    summary_rows.append(total_row)
+
+    summary_df = pd.DataFrame(summary_rows)
+
+    log(f"  人数集計シート作成完了: {len(summary_df)}行")
+
+    return summary_df
 
 
 def read_existing_master():
@@ -532,14 +665,20 @@ def run_initial_build():
     log("=== データ統合開始 ===")
     combined = consolidate_data(all_dfs, priority=10)
 
-    # 詳細表生成
-    detail_df = build_detail_table(combined, dept_map, qual_map, pos_map)
+    # 詳細表生成（全員分）
+    detail_df_all = build_detail_table(combined, dept_map, qual_map, pos_map)
+
+    # 在職者のみ抽出（詳細シート用）
+    detail_df = extract_active_employees(detail_df_all)
 
     # マスタ表抽出
-    master_df = extract_master_table(detail_df)
+    master_df = extract_master_table(detail_df_all)
 
     # 退職者抽出
-    retired_df = extract_retired_employees(detail_df)
+    retired_df = extract_retired_employees(detail_df_all)
+
+    # 人数集計シート作成
+    headcount_df = create_headcount_summary(detail_df_all)
 
     # 出力
     output_dir = Path("output")
@@ -551,10 +690,16 @@ def run_initial_build():
     log(f"出力ファイル作成中: {output_filename}")
 
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+        # 詳細シート（在職者のみ）
         detail_df.to_excel(writer, sheet_name='詳細', index=False)
+        # マスタシート
         master_df.to_excel(writer, sheet_name='マスタ', index=False)
+        # 退職者シート
         if retired_df is not None:
             retired_df.to_excel(writer, sheet_name='退職者', index=False)
+        # 人数集計シート
+        if headcount_df is not None:
+            headcount_df.to_excel(writer, sheet_name='人数集計', index=False)
 
     log(f"出力ファイル: {output_path}")
     log("=========================================")
@@ -562,10 +707,12 @@ def run_initial_build():
     log("=========================================")
 
     result_msg = f"処理が完了しました\n\n出力ファイル:\n{output_path}\n\n"
-    result_msg += f"詳細: {len(detail_df)}行\n"
+    result_msg += f"詳細(在職者): {len(detail_df)}行\n"
     result_msg += f"マスタ: {len(master_df)}行\n"
     if retired_df is not None:
-        result_msg += f"退職者: {len(retired_df)}行"
+        result_msg += f"退職者: {len(retired_df)}行\n"
+    if headcount_df is not None:
+        result_msg += f"人数集計: {len(headcount_df)}部署"
 
     messagebox.showinfo("完了", result_msg)
 
@@ -618,14 +765,20 @@ def run_add_excel():
     log("=== データ統合開始 ===")
     combined = consolidate_data(all_dfs, priority=10)
 
-    # 詳細表生成
-    detail_df = build_detail_table(combined, dept_map, qual_map, pos_map)
+    # 詳細表生成（全員分）
+    detail_df_all = build_detail_table(combined, dept_map, qual_map, pos_map)
+
+    # 在職者のみ抽出（詳細シート用）
+    detail_df = extract_active_employees(detail_df_all)
 
     # マスタ表抽出
-    master_df = extract_master_table(detail_df)
+    master_df = extract_master_table(detail_df_all)
 
     # 退職者抽出
-    retired_df = extract_retired_employees(detail_df)
+    retired_df = extract_retired_employees(detail_df_all)
+
+    # 人数集計シート作成
+    headcount_df = create_headcount_summary(detail_df_all)
 
     # 出力
     output_dir = Path("output")
@@ -637,10 +790,16 @@ def run_add_excel():
     log(f"出力ファイル作成中: {output_filename}")
 
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+        # 詳細シート（在職者のみ）
         detail_df.to_excel(writer, sheet_name='詳細', index=False)
+        # マスタシート
         master_df.to_excel(writer, sheet_name='マスタ', index=False)
+        # 退職者シート
         if retired_df is not None:
             retired_df.to_excel(writer, sheet_name='退職者', index=False)
+        # 人数集計シート
+        if headcount_df is not None:
+            headcount_df.to_excel(writer, sheet_name='人数集計', index=False)
 
     log(f"出力ファイル: {output_path}")
     log("=========================================")
@@ -648,10 +807,12 @@ def run_add_excel():
     log("=========================================")
 
     result_msg = f"Excel追加処理が完了しました\n\n出力ファイル:\n{output_path}\n\n"
-    result_msg += f"詳細: {len(detail_df)}行\n"
+    result_msg += f"詳細(在職者): {len(detail_df)}行\n"
     result_msg += f"マスタ: {len(master_df)}行\n"
     if retired_df is not None:
-        result_msg += f"退職者: {len(retired_df)}行"
+        result_msg += f"退職者: {len(retired_df)}行\n"
+    if headcount_df is not None:
+        result_msg += f"人数集計: {len(headcount_df)}部署"
 
     messagebox.showinfo("完了", result_msg)
 
