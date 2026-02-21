@@ -345,10 +345,13 @@ def normalize_sheet(df, sheet_name, file_name):
         log(f"  警告: シート '{sheet_name}' には社員番号も氏名もありません。スキップします。")
         return None
 
-    # 社員番号がない場合は氏名から生成
-    if not has_emp_no and has_name:
-        log(f"  情報: シート '{sheet_name}' は氏名で管理されています。")
-        data_df["社員番号"] = data_df["氏名"]
+    # 社員番号がない場合は空文字列で埋める
+    if not has_emp_no:
+        data_df["社員番号"] = ""
+
+    # 氏名がない場合は空文字列で埋める
+    if not has_name:
+        data_df["氏名"] = ""
 
     # ソース情報を追加
     data_df["__source__"] = f"{file_name}/{sheet_name}"
@@ -474,11 +477,78 @@ def consolidate_data(all_dfs, priority=10):
 
 
 def build_detail_table(combined, dept_map, qual_map, pos_map):
-    """詳細表を生成（社員番号ごとに最新データを選択）"""
+    """詳細表を生成（社員番号と氏名で統合）"""
     log("詳細表生成中")
 
-    # 社員番号でグループ化
-    grouped = combined.groupby("社員番号", sort=False)
+    # 統合キーを作成（社員番号優先、なければ氏名）
+    def create_merge_key(row):
+        emp_no = str(row.get("社員番号", "")).strip()
+        name = str(row.get("氏名", "")).strip()
+
+        # 社員番号がある場合は社員番号を使用
+        if emp_no and emp_no != "nan" and emp_no != "":
+            return f"emp:{emp_no}"
+        # 社員番号がない場合は氏名を使用
+        elif name and name != "nan" and name != "":
+            return f"name:{name}"
+        else:
+            # 両方ない場合はユニークなIDを生成
+            return f"unknown:{id(row)}"
+
+    combined["__merge_key__"] = combined.apply(create_merge_key, axis=1)
+
+    # 氏名でも名寄せ: 同じ氏名で異なる社員番号を持つレコードを統合
+    # 社員番号と氏名の対応表を作成
+    emp_to_name = {}
+    name_to_emp = defaultdict(set)
+
+    for _, row in combined.iterrows():
+        emp_no = str(row.get("社員番号", "")).strip()
+        name = str(row.get("氏名", "")).strip()
+
+        if emp_no and emp_no != "nan" and emp_no != "" and name and name != "nan" and name != "":
+            emp_to_name[emp_no] = name
+            name_to_emp[name].add(emp_no)
+
+    # 同一氏名で複数の社員番号がある場合、最も頻度の高い社員番号に統一
+    name_to_primary_emp = {}
+    for name, emp_nos in name_to_emp.items():
+        if len(emp_nos) > 1:
+            # 各社員番号の出現回数をカウント
+            emp_counts = defaultdict(int)
+            for _, row in combined.iterrows():
+                row_emp = str(row.get("社員番号", "")).strip()
+                row_name = str(row.get("氏名", "")).strip()
+                if row_name == name and row_emp in emp_nos:
+                    emp_counts[row_emp] += 1
+
+            # 最も出現回数の多い社員番号を選択
+            if emp_counts:
+                primary_emp = max(emp_counts.items(), key=lambda x: x[1])[0]
+                name_to_primary_emp[name] = primary_emp
+                log(f"  名寄せ: '{name}' の社員番号を '{primary_emp}' に統一 (他: {', '.join([e for e in emp_nos if e != primary_emp])})")
+
+    # マージキーを更新（同一氏名を統合）
+    def update_merge_key(row):
+        emp_no = str(row.get("社員番号", "")).strip()
+        name = str(row.get("氏名", "")).strip()
+
+        # 氏名に対応する主要な社員番号がある場合はそれを使用
+        if name in name_to_primary_emp:
+            return f"emp:{name_to_primary_emp[name]}"
+        # 社員番号がある場合は社員番号を使用
+        elif emp_no and emp_no != "nan" and emp_no != "":
+            return f"emp:{emp_no}"
+        # 社員番号がない場合は氏名を使用
+        elif name and name != "nan" and name != "":
+            return f"name:{name}"
+        else:
+            return f"unknown:{id(row)}"
+
+    combined["__merge_key__"] = combined.apply(update_merge_key, axis=1)
+
+    # マージキーでグループ化
+    grouped = combined.groupby("__merge_key__", sort=False)
     log(f"  ユニーク社員数: {len(grouped)}")
 
     result_rows = []
@@ -486,18 +556,16 @@ def build_detail_table(combined, dept_map, qual_map, pos_map):
     sample_log_count = 0  # サンプルログ出力用カウンター
     max_sample_logs = 5   # サンプルログの最大件数
 
-    for emp_no, group in grouped:
+    for merge_key, group in grouped:
         # 優先度が最も低い（0に近い）レコードを選択
         group = group.sort_values("__priority__")
 
         # 各列の値を選択（最初の非空値）
-        row_data = {"社員番号": emp_no}
+        row_data = {}
         filled_cols = []  # このレコードで埋まった列
         empty_cols = []   # このレコードで空の列
 
         for col in TARGET_COLUMNS:
-            if col == "社員番号":
-                continue
 
             if col in group.columns:
                 # 最初の非空値を選択
@@ -538,7 +606,8 @@ def build_detail_table(combined, dept_map, qual_map, pos_map):
         # サンプルログ出力（最初の数件のみ）
         if sample_log_count < max_sample_logs:
             sources = group["__source__"].unique().tolist()
-            log(f"  社員番号 {emp_no}: {len(group)}レコード集約")
+            display_key = row_data.get("社員番号", "") or row_data.get("氏名", "") or merge_key
+            log(f"  {display_key}: {len(group)}レコード集約")
             log(f"    データソース: {', '.join(sources)}")
             if filled_cols:
                 log(f"    集約できた列: {', '.join(filled_cols[:5])}{'...' if len(filled_cols) > 5 else ''}")
