@@ -57,7 +57,7 @@ COLUMN_SYNONYMS = {
     "職位名": ["職位名", "職位", "役職名", "役職", "position_name", "POSITION_NAME"],
     "健保コード": ["健保コード", "health_code", "健保ｺｰﾄﾞ", "保険コード", "健保CD", "HEALTH_CODE"],
     "NO": ["NO", "No", "番号", "no", "№", "ＮＯ", "No.", "NUMBER"],
-    "雇用形態": ["雇用形態", "雇用区分", "雇用", "勤務形態", "就業形態", "雇用形態区分", "employment_type", "EMPLOYMENT_TYPE", "従業員区分", "社員\n区分", "資格名", "資格"],
+    "雇用形態": ["雇用形態", "雇用区分", "雇用", "勤務形態", "就業形態", "雇用形態区分", "employment_type", "EMPLOYMENT_TYPE", "従業員区分", "社員\n区分", "資格名", "資格", "給与体系名称", "給与体系", "給与体系ｺｰﾄﾞ"],
     "退職年月日": ["退職年月日", "退職日", "退職年月日（西暦）", "退職年月日(西暦)", "退職", "離職日", "退職年月日 (西暦)", "retire_date", "RETIRE_DATE", "退社日"],
     "学校名": ["学校名", "出身校", "最終学歴校", "学校", "出身学校"],
     "学科名": ["学科名", "学部学科", "専攻", "学科", "専攻名"],
@@ -899,24 +899,29 @@ def is_part_time_or_contract(employment_type):
     if pd.isna(employment_type):
         return False
 
-    employment_str = str(employment_type).lower()
+    employment_str = str(employment_type)
 
     # パート、嘱託、委託に関連するキーワード(拡張版)
+    # 大文字小文字、全角半角の両方を含む
     keywords = [
-        "パート", "ぱーと", "part", "part-time",
-        "嘱託", "しょくたく", "嘱托",
-        "委託", "いたく",
-        "研修", "けんしゅう",
-        "シルバー", "しるばー", "silver",
-        "契約", "けいやく", "contract",
-        "アルバイト", "あるばいと", "バイト", "ばいと",
-        "臨時", "りんじ", "temp",
-        "派遣", "はけん",
-        "非正規", "ひせいき"
+        "パート", "ぱーと", "ﾊﾟｰﾄ", "part", "part-time", "PART",
+        "嘱託", "しょくたく", "嘱托", "ｼｮｸﾀｸ",
+        "委託", "いたく", "ｲﾀｸ",
+        "研修", "けんしゅう", "ｹﾝｼｭｳ",
+        "シルバー", "しるばー", "ｼﾙﾊﾞｰ", "silver", "SILVER",
+        "契約", "けいやく", "ｹｲﾔｸ", "contract", "CONTRACT",
+        "アルバイト", "あるばいと", "ｱﾙﾊﾞｲﾄ", "バイト", "ばいと", "ﾊﾞｲﾄ",
+        "臨時", "りんじ", "ﾘﾝｼﾞ", "temp", "TEMP",
+        "派遣", "はけん", "ﾊｹﾝ",
+        "非正規", "ひせいき", "ﾋｾｲｷ"
     ]
 
+    # 大文字小文字を区別せず検索
+    employment_str_lower = employment_str.lower()
+
     for keyword in keywords:
-        if keyword in employment_str:
+        # 半角カタカナはそのまま、それ以外は小文字で比較
+        if keyword in employment_str or keyword.lower() in employment_str_lower:
             return True
 
     return False
@@ -969,15 +974,15 @@ def create_headcount_summary(detail_df):
         ]
         row["正社員(女性)"] = len(regular_female)
 
-        # パート/嘱職: パート・嘱託関連
+        # パート/嘱職: パート・嘱託関連（半角カタカナも含む）
         part_time = dept_data_copy[
-            dept_data_copy["雇用形態"].astype(str).str.contains("パート|嘱託|嘱托|ぱーと|しょくたく|アルバイト|臨時", case=False, na=False)
+            dept_data_copy["雇用形態"].astype(str).str.contains("パート|ﾊﾟｰﾄ|嘱託|ｼｮｸﾀｸ|嘱托|ぱーと|しょくたく|アルバイト|ｱﾙﾊﾞｲﾄ|臨時|ﾘﾝｼﾞ", case=False, na=False)
         ]
         row["パート/嘱職"] = len(part_time)
 
-        # 委託/研修生/シルバー
+        # 委託/研修生/シルバー（半角カタカナも含む）
         other = dept_data_copy[
-            dept_data_copy["雇用形態"].astype(str).str.contains("委託|研修|シルバー|いたく|けんしゅう|しるばー", case=False, na=False)
+            dept_data_copy["雇用形態"].astype(str).str.contains("委託|ｲﾀｸ|研修|ｹﾝｼｭｳ|シルバー|ｼﾙﾊﾞｰ|いたく|けんしゅう|しるばー", case=False, na=False)
         ]
         row["委託/研修生/シルバー"] = len(other)
 
