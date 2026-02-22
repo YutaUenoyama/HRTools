@@ -457,8 +457,50 @@ def normalize_sheet(df, sheet_name, file_name):
         if str(data_df.iloc[0]["社員番号"]).strip() == "社員番号":
             data_df = data_df.iloc[1:].reset_index(drop=True)
 
+    # 不要なデータ行を除外
+    if len(data_df) > 0:
+        # 除外すべきキーワード
+        invalid_keywords = [
+            "新名簿案", "社員コード", "社員番号", "NO", "氏名",
+            "従業員名簿", "名簿", "ヘッダー", "項目名",
+            "異動", "備考", "メモ", "注記"
+        ]
+
+        # 社員番号列と氏名列の両方をチェック
+        mask = pd.Series([True] * len(data_df))
+
+        if "社員番号" in data_df.columns:
+            for keyword in invalid_keywords:
+                emp_no_mask = data_df["社員番号"].astype(str).str.contains(keyword, na=False, case=False)
+                mask = mask & ~emp_no_mask
+
+        if "氏名" in data_df.columns:
+            # 氏名が特定のキーワード（ヘッダーやメモ）と完全一致する行を除外
+            header_keywords = ["氏名", "社員氏名", "名前", "NO", "社員コード"]
+            for keyword in header_keywords:
+                name_exact_match = data_df["氏名"].astype(str).str.strip() == keyword
+                mask = mask & ~name_exact_match
+
+        data_df = data_df[mask].reset_index(drop=True)
+
     # 空行を削除
     data_df = data_df.dropna(how='all')
+
+    # 社員番号と氏名の両方が空の行を除外
+    if len(data_df) > 0 and "社員番号" in data_df.columns and "氏名" in data_df.columns:
+        emp_not_empty = data_df["社員番号"].astype(str).str.strip().str.len() > 0
+        emp_not_nan = data_df["社員番号"].notna()
+        emp_not_nan_str = data_df["社員番号"].astype(str).str.strip() != "nan"
+
+        name_not_empty = data_df["氏名"].astype(str).str.strip().str.len() > 0
+        name_not_nan = data_df["氏名"].notna()
+        name_not_nan_str = data_df["氏名"].astype(str).str.strip() != "nan"
+
+        # 社員番号または氏名のどちらかが有効な値を持つ行のみ残す
+        valid_rows = ((emp_not_empty & emp_not_nan & emp_not_nan_str) |
+                      (name_not_empty & name_not_nan & name_not_nan_str))
+
+        data_df = data_df[valid_rows].reset_index(drop=True)
 
     return data_df
 
@@ -470,12 +512,32 @@ def read_excel_all_sheets(file_path):
 
     all_dfs = []
 
+    # スキップすべきシート名のパターン
+    skip_patterns = [
+        r'^\d{6,8}$',  # 202407, 20240701などの年月日形式
+        r'^20\d{2}[年./-]?\d{1,2}',  # 2024年7月, 2024.07, 2024/07などの年月形式
+        r'対比', r'参考', r'モデル', r'Master', r'Sheet\d+$',
+        r'ピボット', r'比較', r'集計', r'一覧', r'五十音'
+    ]
+
     try:
         # 全シート名を取得
         excel_file = pd.ExcelFile(file_path)
         sheet_names = excel_file.sheet_names
 
         for idx, sheet_name in enumerate(sheet_names, 1):
+            # スキップすべきシートかチェック
+            should_skip = False
+            for pattern in skip_patterns:
+                import re
+                if re.search(pattern, sheet_name):
+                    log(f"  シート ({idx}/{len(sheet_names)}): {sheet_name} [スキップ: {pattern}]")
+                    should_skip = True
+                    break
+
+            if should_skip:
+                continue
+
             log(f"  シート ({idx}/{len(sheet_names)}): {sheet_name}")
 
             df = read_sheet_fast(file_path, sheet_name)
@@ -734,6 +796,39 @@ def build_detail_table(combined, dept_map, qual_map, pos_map):
     # 社員番号でソート（文字列として統一）
     detail_df["社員番号"] = detail_df["社員番号"].astype(str)
     detail_df = detail_df.sort_values("社員番号").reset_index(drop=True)
+
+    # 最終的なデータクレンジング
+    if len(detail_df) > 0:
+        initial_count = len(detail_df)
+
+        # 不正な社員番号を持つ行を除外
+        invalid_emp_no_keywords = ["新名簿案", "社員コード", "社員番号", "NO", "従業員", "名簿"]
+        mask = pd.Series([True] * len(detail_df))
+
+        for keyword in invalid_emp_no_keywords:
+            invalid_mask = detail_df["社員番号"].str.contains(keyword, na=False, case=False)
+            mask = mask & ~invalid_mask
+
+        # 社員番号が"nan"または空で、かつ氏名も実データらしくない行を除外
+        emp_is_nan = (detail_df["社員番号"] == "nan") | (detail_df["社員番号"] == "") | (detail_df["社員番号"].isna())
+
+        if "氏名" in detail_df.columns:
+            # 氏名が短すぎる（1文字）または特定のキーワードを含む
+            name_invalid = (
+                (detail_df["氏名"].astype(str).str.len() <= 1) |
+                (detail_df["氏名"].astype(str).str.contains("異動|備考|メモ|－|＋", na=False)) |
+                (detail_df["氏名"].astype(str) == "nan") |
+                (detail_df["氏名"].astype(str) == "(空白)")
+            )
+            # 社員番号がnanで、かつ氏名も無効な行を除外
+            invalid_both = emp_is_nan & name_invalid
+            mask = mask & ~invalid_both
+
+        detail_df = detail_df[mask].reset_index(drop=True)
+
+        removed_count = initial_count - len(detail_df)
+        if removed_count > 0:
+            log(f"  データクレンジング: {removed_count}件の不正レコードを除外")
 
     log(f"  詳細表生成完了: {len(detail_df)}行")
 
