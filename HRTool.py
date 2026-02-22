@@ -52,12 +52,12 @@ COLUMN_SYNONYMS = {
     "所属コード": ["所属コード", "部署コード", "dept_code", "所属ｺｰﾄﾞ", "部署ｺｰﾄﾞ", "組織コード", "所属CD", "部署CD", "DEPT_CODE", "部門コード"],
     "所属名": ["所属名", "部署名", "所属", "部署", "組織名", "所属部署", "配属先", "dept_name", "DEPT_NAME", "部門名称", "部門"],
     "資格コード": ["資格コード", "grade_code", "資格ｺｰﾄﾞ", "等級コード", "等級", "資格CD", "GRADE_CODE"],
-    "資格名": ["資格名", "資格", "等級名", "職能資格", "grade_name", "GRADE_NAME"],
+    "資格名": ["等級名", "職能資格", "grade_name", "GRADE_NAME"],
     "職位コード": ["職位コード", "position_code", "職位ｺｰﾄﾞ", "役職コード", "職位CD", "POSITION_CODE"],
     "職位名": ["職位名", "職位", "役職名", "役職", "position_name", "POSITION_NAME"],
     "健保コード": ["健保コード", "health_code", "健保ｺｰﾄﾞ", "保険コード", "健保CD", "HEALTH_CODE"],
     "NO": ["NO", "No", "番号", "no", "№", "ＮＯ", "No.", "NUMBER"],
-    "雇用形態": ["雇用形態", "雇用区分", "雇用", "勤務形態", "就業形態", "雇用形態区分", "employment_type", "EMPLOYMENT_TYPE", "従業員区分", "社員\n区分"],
+    "雇用形態": ["雇用形態", "雇用区分", "雇用", "勤務形態", "就業形態", "雇用形態区分", "employment_type", "EMPLOYMENT_TYPE", "従業員区分", "社員\n区分", "資格名", "資格"],
     "退職年月日": ["退職年月日", "退職日", "退職年月日（西暦）", "退職年月日(西暦)", "退職", "離職日", "退職年月日 (西暦)", "retire_date", "RETIRE_DATE", "退社日"],
     "学校名": ["学校名", "出身校", "最終学歴校", "学校", "出身学校"],
     "学科名": ["学科名", "学部学科", "専攻", "学科", "専攻名"],
@@ -510,23 +510,28 @@ def build_detail_table(combined, dept_map, qual_map, pos_map):
             emp_to_name[emp_no] = name
             name_to_emp[name].add(emp_no)
 
-    # 同一氏名で複数の社員番号がある場合、最も頻度の高い社員番号に統一
+    # 同一氏名に社員番号がある場合、その社員番号を使用（氏名のみのレコードも統合）
     name_to_primary_emp = {}
     for name, emp_nos in name_to_emp.items():
-        if len(emp_nos) > 1:
-            # 各社員番号の出現回数をカウント
-            emp_counts = defaultdict(int)
-            for _, row in combined.iterrows():
-                row_emp = str(row.get("社員番号", "")).strip()
-                row_name = str(row.get("氏名", "")).strip()
-                if row_name == name and row_emp in emp_nos:
-                    emp_counts[row_emp] += 1
+        if len(emp_nos) >= 1:
+            if len(emp_nos) > 1:
+                # 複数の社員番号がある場合、最も頻度の高い社員番号に統一
+                emp_counts = defaultdict(int)
+                for _, row in combined.iterrows():
+                    row_emp = str(row.get("社員番号", "")).strip()
+                    row_name = str(row.get("氏名", "")).strip()
+                    if row_name == name and row_emp in emp_nos:
+                        emp_counts[row_emp] += 1
 
-            # 最も出現回数の多い社員番号を選択
-            if emp_counts:
-                primary_emp = max(emp_counts.items(), key=lambda x: x[1])[0]
+                # 最も出現回数の多い社員番号を選択
+                if emp_counts:
+                    primary_emp = max(emp_counts.items(), key=lambda x: x[1])[0]
+                    name_to_primary_emp[name] = primary_emp
+                    log(f"  名寄せ: '{name}' の社員番号を '{primary_emp}' に統一 (他: {', '.join([e for e in emp_nos if e != primary_emp])})")
+            else:
+                # 社員番号が1つだけの場合、それを使用
+                primary_emp = list(emp_nos)[0]
                 name_to_primary_emp[name] = primary_emp
-                log(f"  名寄せ: '{name}' の社員番号を '{primary_emp}' に統一 (他: {', '.join([e for e in emp_nos if e != primary_emp])})")
 
     # マージキーを更新（同一氏名を統合）
     def update_merge_key(row):
