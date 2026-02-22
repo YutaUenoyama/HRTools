@@ -73,49 +73,145 @@ def log(message):
     logging.info(message)
 
 
+class SplashScreen:
+    """起動時のスプラッシュスクリーン"""
+
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("HRTool")
+        self.root.geometry("400x200")
+        self.root.overrideredirect(True)  # タイトルバーを非表示
+
+        # ウィンドウを中央に配置
+        self.root.update_idletasks()
+        x = (self.root.winfo_screenwidth() // 2) - 200
+        y = (self.root.winfo_screenheight() // 2) - 100
+        self.root.geometry(f"+{x}+{y}")
+
+        # 背景色
+        self.root.configure(bg='#f0f0f0')
+
+        # タイトル
+        title_label = tk.Label(
+            self.root,
+            text="HRTool",
+            font=("", 24, "bold"),
+            bg='#f0f0f0',
+            fg='#333'
+        )
+        title_label.pack(pady=30)
+
+        # ローディングメッセージ
+        self.message_label = tk.Label(
+            self.root,
+            text="起動中...",
+            font=("", 12),
+            bg='#f0f0f0',
+            fg='#666'
+        )
+        self.message_label.pack(pady=10)
+
+        # プログレスバー（不確定モード）
+        self.progress = ttk.Progressbar(
+            self.root,
+            mode='indeterminate',
+            length=300
+        )
+        self.progress.pack(pady=20)
+        self.progress.start(10)  # アニメーション開始
+
+        self.root.update()
+
+    def close(self):
+        """スプラッシュスクリーンを閉じる"""
+        try:
+            self.progress.stop()
+            self.root.destroy()
+        except:
+            pass
+
+
 class ProgressWindow:
-    """進捗表示ウィンドウ"""
+    """進捗表示ウィンドウ（残り時間表示付き）"""
 
     def __init__(self, title="処理中"):
         self.root = tk.Toplevel()
         self.root.title(title)
-        self.root.geometry("400x150")
+        self.root.geometry("500x200")
 
         # ウィンドウを中央に配置
         self.root.update_idletasks()
-        x = (self.root.winfo_screenwidth() // 2) - (200)
-        y = (self.root.winfo_screenheight() // 2) - (75)
+        x = (self.root.winfo_screenwidth() // 2) - 250
+        y = (self.root.winfo_screenheight() // 2) - 100
         self.root.geometry(f"+{x}+{y}")
 
         # 閉じるボタンを無効化
         self.root.protocol("WM_DELETE_WINDOW", lambda: None)
 
-        # ラベル
-        self.label = tk.Label(self.root, text="処理を開始しています...", font=("", 10))
-        self.label.pack(pady=20)
+        # メッセージラベル
+        self.label = tk.Label(self.root, text="処理を開始しています...", font=("", 11))
+        self.label.pack(pady=15)
 
         # プログレスバー
-        self.progress = ttk.Progressbar(self.root, mode='determinate', length=350)
+        self.progress = ttk.Progressbar(self.root, mode='determinate', length=450)
         self.progress.pack(pady=10)
 
-        # 詳細ラベル
-        self.detail_label = tk.Label(self.root, text="", font=("", 9))
+        # 進捗詳細ラベル
+        self.detail_label = tk.Label(self.root, text="", font=("", 10))
         self.detail_label.pack(pady=5)
+
+        # 残り時間ラベル
+        self.time_label = tk.Label(self.root, text="", font=("", 9), fg='#666')
+        self.time_label.pack(pady=5)
+
+        # 処理中ファイル名ラベル
+        self.file_label = tk.Label(self.root, text="", font=("", 9), fg='#444')
+        self.file_label.pack(pady=5)
+
+        # 時間計測用
+        self.start_time = None
+        self.last_update_time = None
 
         self.root.update()
 
     def update(self, current, total, message=""):
-        """進捗を更新"""
+        """進捗を更新（残り時間推定付き）"""
+        # 開始時刻を記録
+        if self.start_time is None:
+            self.start_time = datetime.now()
+            self.last_update_time = self.start_time
+
+        current_time = datetime.now()
+
         if total > 0:
             percentage = (current / total) * 100
             self.progress['value'] = percentage
 
+            # 残り時間を推定
+            elapsed_time = (current_time - self.start_time).total_seconds()
+            if current > 0 and elapsed_time > 0:
+                avg_time_per_item = elapsed_time / current
+                remaining_items = total - current
+                estimated_remaining = avg_time_per_item * remaining_items
+
+                # 残り時間を表示
+                if estimated_remaining > 60:
+                    time_str = f"残り時間: 約{int(estimated_remaining / 60)}分{int(estimated_remaining % 60)}秒"
+                else:
+                    time_str = f"残り時間: 約{int(estimated_remaining)}秒"
+                self.time_label.config(text=time_str)
+
         if message:
             self.label.config(text=message)
+            # ファイル名を抽出して表示
+            if ":" in message:
+                file_part = message.split(":")[-1].strip()
+                self.file_label.config(text=f"処理中: {file_part}")
 
-        detail_text = f"{current} / {total}"
+        detail_text = f"{current} / {total} ({int((current/total)*100) if total > 0 else 0}%)"
         self.detail_label.config(text=detail_text)
 
+        self.last_update_time = current_time
         self.root.update()
 
     def set_message(self, message):
@@ -1137,12 +1233,25 @@ def select_mode():
 
 def main():
     """メイン処理"""
+    splash = None
     try:
+        # スプラッシュスクリーンを表示
+        splash = SplashScreen()
+
         log("=========================================")
         log("HRTool起動")
         log(f"開始時刻: {datetime.now().strftime('%Y/%m/%d %H:%M:%S')}")
         log(f"ログファイル: {log_filename}")
         log("=========================================")
+
+        # 初期化処理をシミュレート（最低限の表示時間を確保）
+        import time
+        time.sleep(1.5)
+
+        # スプラッシュスクリーンを閉じる
+        if splash:
+            splash.close()
+            splash = None
 
         # モード選択
         mode = select_mode()
@@ -1161,6 +1270,13 @@ def main():
         sys.exit(0)
 
     except Exception as e:
+        # スプラッシュスクリーンを閉じる
+        if splash:
+            try:
+                splash.close()
+            except:
+                pass
+
         error_msg = f"エラーが発生しました:\n{e}\n\n{traceback.format_exc()}"
         log(f"=== エラー発生 ===")
         log(error_msg)
@@ -1178,6 +1294,13 @@ def main():
         sys.exit(1)
 
     finally:
+        # スプラッシュスクリーンのクリーンアップ
+        if splash:
+            try:
+                splash.close()
+            except:
+                pass
+
         # クリーンアップ（念のため）
         try:
             # tkinterのクリーンアップ
