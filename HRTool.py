@@ -949,7 +949,7 @@ def is_part_time_or_contract(employment_type):
     # 大文字小文字、全角半角の両方を含む
     keywords = [
         "パート", "ぱーと", "ﾊﾟｰﾄ", "part", "part-time", "PART",
-        "嘱託", "しょくたく", "嘱托", "ｼｮｸﾀｸ",
+        "嘱託", "しょくたく", "嘱托", "ｼｮｸﾀｸ", "顧嘱託",
         "委託", "いたく", "ｲﾀｸ",
         "研修", "けんしゅう", "ｹﾝｼｭｳ",
         "シルバー", "しるばー", "ｼﾙﾊﾞｰ", "silver", "SILVER",
@@ -987,27 +987,53 @@ def create_headcount_summary(detail_df):
         log("  必要な列（所属名、雇用形態、性別）が不足しています。人数集計シートはスキップします。")
         return None
 
-    # 所属名ごとに集計（所属部ではなく所属名を使用）
-    dept_col = "所属名"
-
+    # 所属コードと所属名を組み合わせてグループ化
+    # まず、所属コードがある場合はそれを優先し、ない場合は所属名を使う
     summary_rows = []
 
-    # NaNを除外してソート（文字列に変換してから比較）
-    dept_list = [d for d in active_df[dept_col].unique() if pd.notna(d)]
-    dept_list_sorted = sorted(dept_list, key=lambda x: str(x))
+    # グループ化キーを作成：所属コード優先、なければ所属名
+    def get_dept_key(row):
+        if "所属コード" in row.index and pd.notna(row["所属コード"]):
+            return ("code", str(row["所属コード"]))
+        elif pd.notna(row["所属名"]) and str(row["所属名"]).strip().lower() != "nan":
+            return ("name", str(row["所属名"]))
+        else:
+            return ("unknown", "")
 
-    # NaNがある場合は最初に処理
-    if active_df[dept_col].isna().any():
-        dept_list_sorted = [pd.NA] + dept_list_sorted
+    active_df_copy = active_df.copy()
+    active_df_copy["_dept_key"] = active_df_copy.apply(get_dept_key, axis=1)
 
-    for dept in dept_list_sorted:
-        # NaNの場合の特別処理
-        if pd.isna(dept):
-            dept_data = active_df[active_df[dept_col].isna()]
+    # グループごとに集計
+    for dept_key, dept_data in active_df_copy.groupby("_dept_key", dropna=False):
+        if dept_key == ("unknown", ""):
             row = {"部署": "（所属不明）"}
         else:
-            dept_data = active_df[active_df[dept_col] == dept]
-            row = {"部署": dept}
+            key_type, key_value = dept_key
+
+            # 表示用の部署名を決定
+            if key_type == "code":
+                # 所属コードでグループ化されている場合
+                dept_code = key_value
+                # このグループの所属名を取得（最も一般的なもの）
+                dept_names = dept_data["所属名"].dropna().astype(str)
+                if len(dept_names) > 0:
+                    # 数値でない所属名を優先
+                    non_numeric_names = [n for n in dept_names if not n.replace('-', '').replace('.', '').isdigit()]
+                    if non_numeric_names:
+                        dept_name = pd.Series(non_numeric_names).mode().iloc[0] if len(non_numeric_names) > 0 else non_numeric_names[0]
+                    else:
+                        dept_name = dept_names.mode().iloc[0] if len(dept_names) > 0 else dept_names.iloc[0]
+
+                    # 所属コードと所属名が異なる場合は両方表示
+                    if dept_code != dept_name:
+                        row = {"部署": f"{dept_code} - {dept_name}"}
+                    else:
+                        row = {"部署": dept_code}
+                else:
+                    row = {"部署": dept_code}
+            else:
+                # 所属名でグループ化されている場合（所属コードがない）
+                row = {"部署": key_value}
 
         # 雇用形態を分類（is_part_time_or_contract関数を使用して統一）
         dept_data_copy = dept_data.copy()
@@ -1017,12 +1043,12 @@ def create_headcount_summary(detail_df):
 
         # 各雇用形態の判定（is_part_time_or_contract関数と同じキーワードを使用）
         def is_part_time_shokutaku(val):
-            """パート・嘱託判定"""
+            """パート・嘱託判定（顧嘱託を含む）"""
             if pd.isna(val):
                 return False
             v_str = str(val)
             keywords = ["パート", "ぱーと", "ﾊﾟｰﾄ", "part", "part-time", "PART",
-                       "嘱託", "しょくたく", "ｼｮｸﾀｸ", "嘱托",
+                       "嘱託", "しょくたく", "ｼｮｸﾀｸ", "嘱托", "顧嘱託",
                        "アルバイト", "あるばいと", "ｱﾙﾊﾞｲﾄ", "バイト", "ばいと", "ﾊﾞｲﾄ",
                        "臨時", "りんじ", "ﾘﾝｼﾞ", "temp", "TEMP"]
             return any(kw in v_str or kw.lower() in v_str.lower() for kw in keywords)
@@ -1040,8 +1066,12 @@ def create_headcount_summary(detail_df):
                        "非正規", "ひせいき", "ﾋｾｲｷ"]
             return any(kw in v_str or kw.lower() in v_str.lower() for kw in keywords)
 
-        # 各カテゴリーに分類
-        dept_data_copy["is_part_shokutaku"] = dept_data_copy["雇用形態"].apply(is_part_time_shokutaku)
+        # 各カテゴリーに分類（雇用形態、職位コード、職位名を考慮）
+        dept_data_copy["is_part_shokutaku"] = (
+            dept_data_copy["雇用形態"].apply(is_part_time_shokutaku) |
+            dept_data_copy.get("職位コード", pd.Series([None] * len(dept_data_copy))).apply(is_part_time_shokutaku) |
+            dept_data_copy.get("職位名", pd.Series([None] * len(dept_data_copy))).apply(is_part_time_shokutaku)
+        )
         dept_data_copy["is_other_emp"] = dept_data_copy["雇用形態"].apply(is_other_employment)
 
         # 正社員: パート/嘱託でも委託/派遣でもない
