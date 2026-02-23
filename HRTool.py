@@ -874,6 +874,49 @@ def build_detail_table(combined, dept_map, qual_map, pos_map):
         if removed_count > 0:
             log(f"  データクレンジング: {removed_count}件の不正レコードを除外")
 
+    # 生年月日のフォーマット統一（YYYYMMDD → YYYY/MM/DD）
+    if "生年月日" in detail_df.columns:
+        def normalize_birthday(val):
+            if pd.isna(val):
+                return val
+            val_str = str(val).strip()
+            # YYYYMMDD形式（8桁の数字）をYYYY/MM/DD形式に変換
+            if val_str.isdigit() and len(val_str) == 8:
+                year = val_str[:4]
+                month = val_str[4:6]
+                day = val_str[6:8]
+                return f"{year}/{month}/{day}"
+            return val
+
+        detail_df["生年月日"] = detail_df["生年月日"].apply(normalize_birthday)
+
+    # 職位名の自動補完（職位コード→職位名のマッピングを作成）
+    if "職位コード" in detail_df.columns and "職位名" in detail_df.columns:
+        # 職位コードと職位名の両方がある行からマッピングを作成
+        mapping_df = detail_df[
+            detail_df["職位コード"].notna() & detail_df["職位名"].notna()
+        ]
+        if len(mapping_df) > 0:
+            position_mapping = mapping_df.groupby("職位コード")["職位名"].first().to_dict()
+
+            log(f"  職位コード→職位名マッピング: {len(position_mapping)}種類")
+
+            # 職位コードはあるが職位名がない行を補完
+            needs_fill = detail_df["職位コード"].notna() & detail_df["職位名"].isna()
+            log(f"  補完対象: {needs_fill.sum()}件")
+
+            filled_count = 0
+            for idx in detail_df[needs_fill].index:
+                code = detail_df.loc[idx, "職位コード"]
+                if code in position_mapping:
+                    detail_df.loc[idx, "職位名"] = position_mapping[code]
+                    filled_count += 1
+
+            if filled_count > 0:
+                log(f"  職位名を自動補完: {filled_count}件")
+            else:
+                log(f"  職位名を自動補完: 0件（マッピングに該当コードなし）")
+
     log(f"  詳細表生成完了: {len(detail_df)}行")
 
     # データ欠損状況をログ出力
@@ -1006,7 +1049,7 @@ def create_headcount_summary(detail_df):
     # グループごとに集計
     for dept_key, dept_data in active_df_copy.groupby("_dept_key", dropna=False):
         if dept_key == ("unknown", ""):
-            row = {"所属コード": "-", "部署名": "（所属不明）"}
+            row = {"所属コード": "-", "所属名": "（所属不明）"}
         else:
             key_type, key_value = dept_key
 
@@ -1026,10 +1069,10 @@ def create_headcount_summary(detail_df):
                 else:
                     dept_name = "-"
 
-                row = {"所属コード": dept_code, "部署名": dept_name}
+                row = {"所属コード": dept_code, "所属名": dept_name}
             else:
                 # 所属名でグループ化されている場合（所属コードがない）
-                row = {"所属コード": "-", "部署名": key_value}
+                row = {"所属コード": "-", "所属名": key_value}
 
         # 雇用形態を分類（is_part_time_or_contract関数を使用して統一）
         dept_data_copy = dept_data.copy()
@@ -1110,7 +1153,7 @@ def create_headcount_summary(detail_df):
         summary_rows.append(row)
 
     # 全体合計行を追加
-    total_row = {"所属コード": "-", "部署名": "【全体合計】"}
+    total_row = {"所属コード": "-", "所属名": "【全体合計】"}
     total_row["正社員(男性)"] = sum(r["正社員(男性)"] for r in summary_rows)
     total_row["正社員(女性)"] = sum(r["正社員(女性)"] for r in summary_rows)
     total_row["正社員(性別不明)"] = sum(r["正社員(性別不明)"] for r in summary_rows)
@@ -1124,18 +1167,18 @@ def create_headcount_summary(detail_df):
     # デバッグ: 最初の行を確認
     if len(summary_df) > 0:
         first_row_code = summary_df.iloc[0]["所属コード"]
-        first_row_dept = summary_df.iloc[0]["部署名"]
-        log(f"  [DEBUG] 1行目: 所属コード={repr(first_row_code)}, 部署名={repr(first_row_dept)}")
+        first_row_dept = summary_df.iloc[0]["所属名"]
+        log(f"  [DEBUG] 1行目: 所属コード={repr(first_row_code)}, 所属名={repr(first_row_dept)}")
 
     # 所属コードと部署名を文字列型に明示的に変換（NaN防止）
     summary_df["所属コード"] = summary_df["所属コード"].fillna("-").astype(str)
-    summary_df["部署名"] = summary_df["部署名"].fillna("（不明）").astype(str)
+    summary_df["所属名"] = summary_df["所属名"].fillna("（不明）").astype(str)
 
     # デバッグ: 変換後の最初の行を確認
     if len(summary_df) > 0:
         first_row_code = summary_df.iloc[0]["所属コード"]
-        first_row_dept = summary_df.iloc[0]["部署名"]
-        log(f"  [DEBUG] 変換後1行目: 所属コード={repr(first_row_code)}, 部署名={repr(first_row_dept)}")
+        first_row_dept = summary_df.iloc[0]["所属名"]
+        log(f"  [DEBUG] 変換後1行目: 所属コード={repr(first_row_code)}, 所属名={repr(first_row_dept)}")
 
     log(f"  人数集計シート作成完了: {len(summary_df)}行")
 
