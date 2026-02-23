@@ -19,7 +19,10 @@ import threading
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 
 # ログ設定
-log_filename = f"処理ログ_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+# exeが配置されたディレクトリのlogsフォルダに出力
+log_dir = Path("logs")
+log_dir.mkdir(exist_ok=True)
+log_filename = log_dir / f"処理ログ_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(message)s',
@@ -1325,16 +1328,45 @@ def run_initial_build():
         log(f"出力ファイル作成中: {output_filename}")
 
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            # 詳細シート（在職者のみ）
-            detail_df.to_excel(writer, sheet_name='詳細', index=False)
-            # マスタシート
+            # シートを書き込み（マスタを一番左にするため順序を変更）
             master_df.to_excel(writer, sheet_name='マスタ', index=False)
-            # 退職者シート
+            detail_df.to_excel(writer, sheet_name='詳細', index=False)
             if retired_df is not None:
                 retired_df.to_excel(writer, sheet_name='退職者', index=False)
-            # 人数集計シート
             if headcount_df is not None:
                 headcount_df.to_excel(writer, sheet_name='人数集計', index=False)
+
+            # 数値列の!マーク警告を解消（数値のみの文字列を数値型に変換）
+            workbook = writer.book
+
+            # 各シートに対して処理
+            for sheet_name in ['マスタ', '詳細', '退職者', '人数集計']:
+                if sheet_name not in workbook.sheetnames:
+                    continue
+
+                worksheet = workbook[sheet_name]
+
+                # ヘッダー行から列名を取得
+                headers = [cell.value for cell in worksheet[1]]
+
+                # 数値列の候補（社員番号は除外：先頭ゼロの可能性があるため）
+                numeric_columns = ['所属コード', '資格コード', '職位コード', '健保コード', 'NO']
+
+                for col_name in numeric_columns:
+                    if col_name in headers:
+                        col_idx = headers.index(col_name) + 1  # 1-indexed
+
+                        for row in range(2, worksheet.max_row + 1):
+                            cell = worksheet.cell(row=row, column=col_idx)
+
+                            # 数値のみの文字列を数値型に変換（"-"は除外）
+                            if isinstance(cell.value, str) and cell.value not in ['-', '（データなし）', '']:
+                                # 数値として解釈可能かチェック
+                                if cell.value.isdigit():
+                                    try:
+                                        cell.value = int(cell.value)
+                                    except:
+                                        pass
 
         progress.close()
 
@@ -1446,16 +1478,45 @@ def run_add_excel():
         log(f"出力ファイル作成中: {output_filename}")
 
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            # 詳細シート（在職者のみ）
-            detail_df.to_excel(writer, sheet_name='詳細', index=False)
-            # マスタシート
+            # シートを書き込み（マスタを一番左にするため順序を変更）
             master_df.to_excel(writer, sheet_name='マスタ', index=False)
-            # 退職者シート
+            detail_df.to_excel(writer, sheet_name='詳細', index=False)
             if retired_df is not None:
                 retired_df.to_excel(writer, sheet_name='退職者', index=False)
-            # 人数集計シート
             if headcount_df is not None:
                 headcount_df.to_excel(writer, sheet_name='人数集計', index=False)
+
+            # 数値列の!マーク警告を解消（数値のみの文字列を数値型に変換）
+            workbook = writer.book
+
+            # 各シートに対して処理
+            for sheet_name in ['マスタ', '詳細', '退職者', '人数集計']:
+                if sheet_name not in workbook.sheetnames:
+                    continue
+
+                worksheet = workbook[sheet_name]
+
+                # ヘッダー行から列名を取得
+                headers = [cell.value for cell in worksheet[1]]
+
+                # 数値列の候補（社員番号は除外：先頭ゼロの可能性があるため）
+                numeric_columns = ['所属コード', '資格コード', '職位コード', '健保コード', 'NO']
+
+                for col_name in numeric_columns:
+                    if col_name in headers:
+                        col_idx = headers.index(col_name) + 1  # 1-indexed
+
+                        for row in range(2, worksheet.max_row + 1):
+                            cell = worksheet.cell(row=row, column=col_idx)
+
+                            # 数値のみの文字列を数値型に変換（"-"は除外）
+                            if isinstance(cell.value, str) and cell.value not in ['-', '（データなし）', '']:
+                                # 数値として解釈可能かチェック
+                                if cell.value.isdigit():
+                                    try:
+                                        cell.value = int(cell.value)
+                                    except:
+                                        pass
 
         progress.close()
 
