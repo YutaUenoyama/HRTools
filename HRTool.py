@@ -57,7 +57,7 @@ COLUMN_SYNONYMS = {
     "職位名": ["職位名", "職位", "役職名", "役職", "position_name", "POSITION_NAME"],
     "健保コード": ["健保コード", "health_code", "健保ｺｰﾄﾞ", "保険コード", "健保CD", "HEALTH_CODE"],
     "NO": ["NO", "No", "番号", "no", "№", "ＮＯ", "No.", "NUMBER"],
-    "雇用形態": ["雇用形態", "雇用区分", "雇用", "勤務形態", "就業形態", "雇用形態区分", "employment_type", "EMPLOYMENT_TYPE", "従業員区分", "社員\n区分", "資格名", "資格", "給与体系名称", "給与体系", "給与体系ｺｰﾄﾞ"],
+    "雇用形態": ["雇用形態", "雇用区分", "雇用", "勤務形態", "就業形態", "雇用形態区分", "employment_type", "EMPLOYMENT_TYPE", "従業員区分", "資格名", "資格", "給与体系名称", "給与体系", "給与体系ｺｰﾄﾞ"],
     "退職年月日": ["退職年月日", "退職日", "退職年月日（西暦）", "退職年月日(西暦)", "退職", "離職日", "退職年月日 (西暦)", "retire_date", "RETIRE_DATE", "退社日"],
     "学校名": ["学校名", "出身校", "最終学歴校", "学校", "出身学校"],
     "学科名": ["学科名", "学部学科", "専攻", "学科", "専攻名"],
@@ -735,6 +735,14 @@ def build_detail_table(combined, dept_map, qual_map, pos_map):
                 if col == "雇用形態":
                     values = group[col].dropna()
                     values = values[values.astype(str).str.strip() != ""]
+
+                    # 数字のみの値を除外（区分コードを除外）
+                    def is_numeric_only(val):
+                        v_str = str(val).strip()
+                        # 整数または小数点付き数字のみの場合はTrue
+                        return v_str.replace('.', '').replace('0', '').isdigit() or v_str.isdigit()
+
+                    values = values[~values.apply(is_numeric_only)]
 
                     if len(values) > 0:
                         # パート/嘱託/委託などの具体的な値を優先
