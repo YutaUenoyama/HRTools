@@ -1164,21 +1164,9 @@ def create_headcount_summary(detail_df):
 
     summary_df = pd.DataFrame(summary_rows)
 
-    # デバッグ: 最初の行を確認
-    if len(summary_df) > 0:
-        first_row_code = summary_df.iloc[0]["所属コード"]
-        first_row_dept = summary_df.iloc[0]["所属名"]
-        log(f"  [DEBUG] 1行目: 所属コード={repr(first_row_code)}, 所属名={repr(first_row_dept)}")
-
-    # 所属コードと部署名を文字列型に明示的に変換（NaN防止）
-    summary_df["所属コード"] = summary_df["所属コード"].fillna("-").astype(str)
-    summary_df["所属名"] = summary_df["所属名"].fillna("（不明）").astype(str)
-
-    # デバッグ: 変換後の最初の行を確認
-    if len(summary_df) > 0:
-        first_row_code = summary_df.iloc[0]["所属コード"]
-        first_row_dept = summary_df.iloc[0]["所属名"]
-        log(f"  [DEBUG] 変換後1行目: 所属コード={repr(first_row_code)}, 所属名={repr(first_row_dept)}")
+    # 所属コードと所属名を文字列型に明示的に変換（NaN・空文字列を置換）
+    summary_df["所属コード"] = summary_df["所属コード"].fillna("-").replace("", "-").astype(str)
+    summary_df["所属名"] = summary_df["所属名"].fillna("（所属不明）").replace("", "（所属不明）").astype(str)
 
     log(f"  人数集計シート作成完了: {len(summary_df)}行")
 
