@@ -611,9 +611,10 @@ def consolidate_data(all_dfs, priority=10):
     """データを統合"""
     log(f"データ統合中 ({len(all_dfs)}シート)")
 
-    # 優先度を追加
+    # 優先度を追加（既に設定されている場合は上書きしない）
     for df in all_dfs:
-        df["__priority__"] = priority
+        if "__priority__" not in df.columns:
+            df["__priority__"] = priority
 
     # 全データを結合
     if not all_dfs:
@@ -916,6 +917,38 @@ def build_detail_table(combined, dept_map, qual_map, pos_map):
                 log(f"  職位名を自動補完: {filled_count}件")
             else:
                 log(f"  職位名を自動補完: 0件（マッピングに該当コードなし）")
+
+    # 空文字列を統一（データなし/不明の表記に変更）
+    log("  空文字列を統一しています...")
+
+    # コード類は"-"に統一
+    code_columns = ["社員番号", "所属コード", "資格コード", "職位コード", "健保コード", "NO"]
+    for col in code_columns:
+        if col in detail_df.columns:
+            detail_df[col] = detail_df[col].fillna("-").replace("", "-").replace("nan", "-").astype(str)
+
+    # 名前類は"（データなし）"に統一（ただし氏名は"-"）
+    name_columns = {
+        "氏名": "-",
+        "フリガナ": "（データなし）",
+        "所属名": "（データなし）",
+        "資格名": "（データなし）",
+        "職位名": "（データなし）"
+    }
+    for col, placeholder in name_columns.items():
+        if col in detail_df.columns:
+            detail_df[col] = detail_df[col].fillna(placeholder).replace("", placeholder).replace("nan", placeholder).astype(str)
+
+    # その他の列は"-"に統一（日付列を除く）
+    other_columns = ["性別", "雇用形態", "勤務地", "本部", "所属部", "学校名", "学科名", "勤続年数"]
+    for col in other_columns:
+        if col in detail_df.columns:
+            detail_df[col] = detail_df[col].fillna("-").replace("", "-").replace("nan", "-").astype(str)
+
+    # 日付列は空文字列のまま（Excelで見やすくするため）
+    for col in DATE_COLUMNS:
+        if col in detail_df.columns:
+            detail_df[col] = detail_df[col].fillna("").replace("nan", "").astype(str)
 
     log(f"  詳細表生成完了: {len(detail_df)}行")
 
