@@ -992,9 +992,9 @@ def create_headcount_summary(detail_df):
 
     summary_rows = []
 
-    # NaNを除外してソート
+    # NaNを除外してソート（文字列に変換してから比較）
     dept_list = [d for d in active_df[dept_col].unique() if pd.notna(d)]
-    dept_list_sorted = sorted(dept_list)
+    dept_list_sorted = sorted(dept_list, key=lambda x: str(x))
 
     # NaNがある場合は最初に処理
     if active_df[dept_col].isna().any():
@@ -1009,37 +1009,72 @@ def create_headcount_summary(detail_df):
             dept_data = active_df[active_df[dept_col] == dept]
             row = {"部署": dept}
 
-        # 正社員判定: パート/嘱託/委託以外
+        # 雇用形態を分類（is_part_time_or_contract関数を使用して統一）
         dept_data_copy = dept_data.copy()
-        dept_data_copy["is_part_time"] = dept_data_copy["雇用形態"].apply(is_part_time_or_contract)
 
         # 性別を正規化（念のため再度適用）
         dept_data_copy["性別_normalized"] = dept_data_copy["性別"].apply(normalize_gender)
 
-        # 正社員(男性): パート/嘱託/委託以外 かつ 男性
+        # 各雇用形態の判定（is_part_time_or_contract関数と同じキーワードを使用）
+        def is_part_time_shokutaku(val):
+            """パート・嘱託判定"""
+            if pd.isna(val):
+                return False
+            v_str = str(val)
+            keywords = ["パート", "ぱーと", "ﾊﾟｰﾄ", "part", "part-time", "PART",
+                       "嘱託", "しょくたく", "ｼｮｸﾀｸ", "嘱托",
+                       "アルバイト", "あるばいと", "ｱﾙﾊﾞｲﾄ", "バイト", "ばいと", "ﾊﾞｲﾄ",
+                       "臨時", "りんじ", "ﾘﾝｼﾞ", "temp", "TEMP"]
+            return any(kw in v_str or kw.lower() in v_str.lower() for kw in keywords)
+
+        def is_other_employment(val):
+            """委託・派遣・契約・研修生・シルバー・非正規判定"""
+            if pd.isna(val):
+                return False
+            v_str = str(val)
+            keywords = ["委託", "いたく", "ｲﾀｸ",
+                       "研修", "けんしゅう", "ｹﾝｼｭｳ",
+                       "シルバー", "しるばー", "ｼﾙﾊﾞｰ", "silver", "SILVER",
+                       "派遣", "はけん", "ﾊｹﾝ",
+                       "契約", "けいやく", "ｹｲﾔｸ", "contract", "CONTRACT",
+                       "非正規", "ひせいき", "ﾋｾｲｷ"]
+            return any(kw in v_str or kw.lower() in v_str.lower() for kw in keywords)
+
+        # 各カテゴリーに分類
+        dept_data_copy["is_part_shokutaku"] = dept_data_copy["雇用形態"].apply(is_part_time_shokutaku)
+        dept_data_copy["is_other_emp"] = dept_data_copy["雇用形態"].apply(is_other_employment)
+
+        # 正社員: パート/嘱託でも委託/派遣でもない
+        dept_data_copy["is_regular"] = ~dept_data_copy["is_part_shokutaku"] & ~dept_data_copy["is_other_emp"]
+
+        # 正社員(男性)
         regular_male = dept_data_copy[
-            (~dept_data_copy["is_part_time"]) &
+            dept_data_copy["is_regular"] &
             (dept_data_copy["性別_normalized"].str.contains("男", na=False))
         ]
         row["正社員(男性)"] = len(regular_male)
 
-        # 正社員(女性): パート/嘱託/委託以外 かつ 女性
+        # 正社員(女性)
         regular_female = dept_data_copy[
-            (~dept_data_copy["is_part_time"]) &
+            dept_data_copy["is_regular"] &
             (dept_data_copy["性別_normalized"].str.contains("女", na=False))
         ]
         row["正社員(女性)"] = len(regular_female)
 
-        # パート/嘱職: パート・嘱託関連（半角カタカナも含む）
-        part_time = dept_data_copy[
-            dept_data_copy["雇用形態"].astype(str).str.contains("パート|ﾊﾟｰﾄ|嘱託|ｼｮｸﾀｸ|嘱托|ぱーと|しょくたく|アルバイト|ｱﾙﾊﾞｲﾄ|臨時|ﾘﾝｼﾞ", case=False, na=False)
+        # 正社員(性別不明)
+        regular_unknown = dept_data_copy[
+            dept_data_copy["is_regular"] &
+            (~dept_data_copy["性別_normalized"].str.contains("男", na=False)) &
+            (~dept_data_copy["性別_normalized"].str.contains("女", na=False))
         ]
+        row["正社員(性別不明)"] = len(regular_unknown)
+
+        # パート/嘱職
+        part_time = dept_data_copy[dept_data_copy["is_part_shokutaku"]]
         row["パート/嘱職"] = len(part_time)
 
-        # 委託/研修生/シルバー（半角カタカナも含む）
-        other = dept_data_copy[
-            dept_data_copy["雇用形態"].astype(str).str.contains("委託|ｲﾀｸ|研修|ｹﾝｼｭｳ|シルバー|ｼﾙﾊﾞｰ|いたく|けんしゅう|しるばー", case=False, na=False)
-        ]
+        # 委託/研修生/シルバー
+        other = dept_data_copy[dept_data_copy["is_other_emp"]]
         row["委託/研修生/シルバー"] = len(other)
 
         # 合計
@@ -1051,6 +1086,7 @@ def create_headcount_summary(detail_df):
     total_row = {"部署": "【全体合計】"}
     total_row["正社員(男性)"] = sum(r["正社員(男性)"] for r in summary_rows)
     total_row["正社員(女性)"] = sum(r["正社員(女性)"] for r in summary_rows)
+    total_row["正社員(性別不明)"] = sum(r["正社員(性別不明)"] for r in summary_rows)
     total_row["パート/嘱職"] = sum(r["パート/嘱職"] for r in summary_rows)
     total_row["委託/研修生/シルバー"] = sum(r["委託/研修生/シルバー"] for r in summary_rows)
     total_row["合計"] = sum(r["合計"] for r in summary_rows)
@@ -1063,6 +1099,7 @@ def create_headcount_summary(detail_df):
     # デバッグ情報
     log(f"  正社員(男性)合計: {total_row['正社員(男性)']}")
     log(f"  正社員(女性)合計: {total_row['正社員(女性)']}")
+    log(f"  正社員(性別不明)合計: {total_row['正社員(性別不明)']}")
     log(f"  パート/嘱職合計: {total_row['パート/嘱職']}")
     log(f"  委託/研修生/シルバー合計: {total_row['委託/研修生/シルバー']}")
 
