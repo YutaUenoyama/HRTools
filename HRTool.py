@@ -979,15 +979,27 @@ def create_headcount_summary(detail_df):
         log("  必要な列（所属名、雇用形態、性別）が不足しています。人数集計シートはスキップします。")
         return None
 
-    # 所属部ごとに集計
-    dept_col = "所属部" if "所属部" in active_df.columns else "所属名"
+    # 所属名ごとに集計（所属部ではなく所属名を使用）
+    dept_col = "所属名"
 
     summary_rows = []
 
-    for dept in sorted(active_df[dept_col].unique()):
-        dept_data = active_df[active_df[dept_col] == dept]
+    # NaNを除外してソート
+    dept_list = [d for d in active_df[dept_col].unique() if pd.notna(d)]
+    dept_list_sorted = sorted(dept_list)
 
-        row = {"部署": dept}
+    # NaNがある場合は最初に処理
+    if active_df[dept_col].isna().any():
+        dept_list_sorted = [pd.NA] + dept_list_sorted
+
+    for dept in dept_list_sorted:
+        # NaNの場合の特別処理
+        if pd.isna(dept):
+            dept_data = active_df[active_df[dept_col].isna()]
+            row = {"部署": "（所属不明）"}
+        else:
+            dept_data = active_df[active_df[dept_col] == dept]
+            row = {"部署": dept}
 
         # 正社員判定: パート/嘱託/委託以外
         dept_data_copy = dept_data.copy()
