@@ -57,7 +57,7 @@ COLUMN_SYNONYMS = {
     "職位名": ["職位名", "職位", "役職名", "役職", "position_name", "POSITION_NAME"],
     "健保コード": ["健保コード", "health_code", "健保ｺｰﾄﾞ", "保険コード", "健保CD", "HEALTH_CODE"],
     "NO": ["NO", "No", "番号", "no", "№", "ＮＯ", "No.", "NUMBER"],
-    "雇用形態": ["雇用形態", "雇用区分", "雇用", "勤務形態", "就業形態", "雇用形態区分", "employment_type", "EMPLOYMENT_TYPE", "従業員区分", "資格名", "資格", "給与体系名称", "給与体系", "給与体系ｺｰﾄﾞ"],
+    "雇用形態": ["雇用形態", "雇用区分", "雇用", "勤務形態", "就業形態", "雇用形態区分", "employment_type", "EMPLOYMENT_TYPE", "従業員区分", "給与体系名称", "給与体系", "給与体系ｺｰﾄﾞ"],
     "退職年月日": ["退職年月日", "退職日", "退職年月日（西暦）", "退職年月日(西暦)", "退職", "離職日", "退職年月日 (西暦)", "retire_date", "RETIRE_DATE", "退社日"],
     "学校名": ["学校名", "出身校", "最終学歴校", "学校", "出身学校"],
     "学科名": ["学科名", "学部学科", "専攻", "学科", "専攻名"],
@@ -1006,11 +1006,11 @@ def create_headcount_summary(detail_df):
     # グループごとに集計
     for dept_key, dept_data in active_df_copy.groupby("_dept_key", dropna=False):
         if dept_key == ("unknown", ""):
-            row = {"部署": "（所属不明）"}
+            row = {"所属コード": "-", "部署名": "（所属不明）"}
         else:
             key_type, key_value = dept_key
 
-            # 表示用の部署名を決定
+            # 所属コードと部署名を決定
             if key_type == "code":
                 # 所属コードでグループ化されている場合
                 dept_code = key_value
@@ -1023,17 +1023,13 @@ def create_headcount_summary(detail_df):
                         dept_name = pd.Series(non_numeric_names).mode().iloc[0] if len(non_numeric_names) > 0 else non_numeric_names[0]
                     else:
                         dept_name = dept_names.mode().iloc[0] if len(dept_names) > 0 else dept_names.iloc[0]
-
-                    # 所属コードと所属名が異なる場合は両方表示
-                    if dept_code != dept_name:
-                        row = {"部署": f"{dept_code} - {dept_name}"}
-                    else:
-                        row = {"部署": dept_code}
                 else:
-                    row = {"部署": dept_code}
+                    dept_name = "-"
+
+                row = {"所属コード": dept_code, "部署名": dept_name}
             else:
                 # 所属名でグループ化されている場合（所属コードがない）
-                row = {"部署": key_value}
+                row = {"所属コード": "-", "部署名": key_value}
 
         # 雇用形態を分類（is_part_time_or_contract関数を使用して統一）
         dept_data_copy = dept_data.copy()
@@ -1066,11 +1062,12 @@ def create_headcount_summary(detail_df):
                        "非正規", "ひせいき", "ﾋｾｲｷ"]
             return any(kw in v_str or kw.lower() in v_str.lower() for kw in keywords)
 
-        # 各カテゴリーに分類（雇用形態、職位コード、職位名を考慮）
+        # 各カテゴリーに分類（雇用形態、職位コード、職位名、資格名を考慮）
         dept_data_copy["is_part_shokutaku"] = (
             dept_data_copy["雇用形態"].apply(is_part_time_shokutaku) |
             dept_data_copy.get("職位コード", pd.Series([None] * len(dept_data_copy))).apply(is_part_time_shokutaku) |
-            dept_data_copy.get("職位名", pd.Series([None] * len(dept_data_copy))).apply(is_part_time_shokutaku)
+            dept_data_copy.get("職位名", pd.Series([None] * len(dept_data_copy))).apply(is_part_time_shokutaku) |
+            dept_data_copy.get("資格名", pd.Series([None] * len(dept_data_copy))).apply(is_part_time_shokutaku)
         )
         dept_data_copy["is_other_emp"] = dept_data_copy["雇用形態"].apply(is_other_employment)
 
@@ -1113,7 +1110,7 @@ def create_headcount_summary(detail_df):
         summary_rows.append(row)
 
     # 全体合計行を追加
-    total_row = {"部署": "【全体合計】"}
+    total_row = {"所属コード": "-", "部署名": "【全体合計】"}
     total_row["正社員(男性)"] = sum(r["正社員(男性)"] for r in summary_rows)
     total_row["正社員(女性)"] = sum(r["正社員(女性)"] for r in summary_rows)
     total_row["正社員(性別不明)"] = sum(r["正社員(性別不明)"] for r in summary_rows)
@@ -1123,6 +1120,22 @@ def create_headcount_summary(detail_df):
     summary_rows.append(total_row)
 
     summary_df = pd.DataFrame(summary_rows)
+
+    # デバッグ: 最初の行を確認
+    if len(summary_df) > 0:
+        first_row_code = summary_df.iloc[0]["所属コード"]
+        first_row_dept = summary_df.iloc[0]["部署名"]
+        log(f"  [DEBUG] 1行目: 所属コード={repr(first_row_code)}, 部署名={repr(first_row_dept)}")
+
+    # 所属コードと部署名を文字列型に明示的に変換（NaN防止）
+    summary_df["所属コード"] = summary_df["所属コード"].fillna("-").astype(str)
+    summary_df["部署名"] = summary_df["部署名"].fillna("（不明）").astype(str)
+
+    # デバッグ: 変換後の最初の行を確認
+    if len(summary_df) > 0:
+        first_row_code = summary_df.iloc[0]["所属コード"]
+        first_row_dept = summary_df.iloc[0]["部署名"]
+        log(f"  [DEBUG] 変換後1行目: 所属コード={repr(first_row_code)}, 部署名={repr(first_row_dept)}")
 
     log(f"  人数集計シート作成完了: {len(summary_df)}行")
 
