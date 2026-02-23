@@ -925,7 +925,8 @@ def build_detail_table(combined, dept_map, qual_map, pos_map):
     code_columns = ["社員番号", "所属コード", "資格コード", "職位コード", "健保コード", "NO"]
     for col in code_columns:
         if col in detail_df.columns:
-            detail_df[col] = detail_df[col].fillna("-").replace("", "-").replace("nan", "-").astype(str)
+            # 先に文字列化してから置換
+            detail_df[col] = detail_df[col].astype(str).replace("nan", "-").replace("NaN", "-").replace("None", "-").replace("", "-").fillna("-")
 
     # 名前類は"（データなし）"に統一（ただし氏名は"-"）
     name_columns = {
@@ -937,18 +938,21 @@ def build_detail_table(combined, dept_map, qual_map, pos_map):
     }
     for col, placeholder in name_columns.items():
         if col in detail_df.columns:
-            detail_df[col] = detail_df[col].fillna(placeholder).replace("", placeholder).replace("nan", placeholder).astype(str)
+            # 先に文字列化してから置換
+            detail_df[col] = detail_df[col].astype(str).replace("nan", placeholder).replace("NaN", placeholder).replace("None", placeholder).replace("", placeholder).fillna(placeholder)
 
     # その他の列は"-"に統一（日付列を除く）
     other_columns = ["性別", "雇用形態", "勤務地", "本部", "所属部", "学校名", "学科名", "勤続年数"]
     for col in other_columns:
         if col in detail_df.columns:
-            detail_df[col] = detail_df[col].fillna("-").replace("", "-").replace("nan", "-").astype(str)
+            # 先に文字列化してから置換
+            detail_df[col] = detail_df[col].astype(str).replace("nan", "-").replace("NaN", "-").replace("None", "-").replace("", "-").fillna("-")
 
     # 日付列は空文字列のまま（Excelで見やすくするため）
     for col in DATE_COLUMNS:
         if col in detail_df.columns:
-            detail_df[col] = detail_df[col].fillna("").replace("nan", "").astype(str)
+            # 先に文字列化してから"nan"を空文字列に置換
+            detail_df[col] = detail_df[col].astype(str).replace("nan", "").replace("NaN", "").replace("None", "").fillna("")
 
     log(f"  詳細表生成完了: {len(detail_df)}行")
 
