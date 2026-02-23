@@ -731,20 +731,56 @@ def build_detail_table(combined, dept_map, qual_map, pos_map):
         for col in TARGET_COLUMNS:
 
             if col in group.columns:
-                # 最初の非空値を選択
-                values = group[col].dropna()
-                values = values[values.astype(str).str.strip() != ""]
-                if len(values) > 0:
-                    value = values.iloc[0]
-                    # 日付列の場合は変換
-                    if col in DATE_COLUMNS:
-                        value = convert_excel_date(value)
-                    row_data[col] = value
-                    filled_cols.append(col)
+                # 雇用形態列は特別処理: より具体的な値を優先
+                if col == "雇用形態":
+                    values = group[col].dropna()
+                    values = values[values.astype(str).str.strip() != ""]
+
+                    if len(values) > 0:
+                        # パート/嘱託/委託などの具体的な値を優先
+                        specific_values = []
+                        generic_values = []
+
+                        for v in values:
+                            v_str = str(v)
+                            # is_part_time_or_contract()で判定してtrueになる値は具体的
+                            if is_part_time_or_contract(v_str):
+                                specific_values.append(v)
+                            # 「常用」「正社員」など一般的な値は後回し
+                            elif v_str in ["常用", "正社員", "正規", "社員"]:
+                                generic_values.append(v)
+                            else:
+                                specific_values.append(v)
+
+                        # 具体的な値があればそれを使用、なければ一般的な値
+                        if specific_values:
+                            value = specific_values[0]
+                        elif generic_values:
+                            value = generic_values[0]
+                        else:
+                            value = values.iloc[0]
+
+                        row_data[col] = value
+                        filled_cols.append(col)
+                    else:
+                        row_data[col] = ""
+                        empty_cols.append(col)
+                        missing_data_count[col] += 1
                 else:
-                    row_data[col] = ""
-                    empty_cols.append(col)
-                    missing_data_count[col] += 1
+                    # 通常の列は最初の非空値を選択
+                    values = group[col].dropna()
+                    values = values[values.astype(str).str.strip() != ""]
+                    if len(values) > 0:
+                        value = values.iloc[0]
+                        # 日付列の場合は変換
+                        if col in DATE_COLUMNS:
+                            value = convert_excel_date(value)
+                        row_data[col] = value
+                        filled_cols.append(col)
+                    else:
+                        row_data[col] = ""
+                        empty_cols.append(col)
+                        missing_data_count[col] += 1
             else:
                 row_data[col] = ""
                 empty_cols.append(col)
