@@ -1328,19 +1328,19 @@ def run_initial_build():
         log(f"出力ファイル作成中: {output_filename}")
 
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            # シートを書き込み（マスタを一番左にするため順序を変更）
-            master_df.to_excel(writer, sheet_name='マスタ', index=False)
+            # シートを書き込み（マスタを一番右にするため順序を変更）
             detail_df.to_excel(writer, sheet_name='詳細', index=False)
             if retired_df is not None:
                 retired_df.to_excel(writer, sheet_name='退職者', index=False)
             if headcount_df is not None:
                 headcount_df.to_excel(writer, sheet_name='人数集計', index=False)
+            master_df.to_excel(writer, sheet_name='マスタ', index=False)
 
             # 数値列の!マーク警告を解消（数値のみの文字列を数値型に変換）
             workbook = writer.book
 
             # 各シートに対して処理
-            for sheet_name in ['マスタ', '詳細', '退職者', '人数集計']:
+            for sheet_name in ['詳細', '退職者', '人数集計', 'マスタ']:
                 if sheet_name not in workbook.sheetnames:
                     continue
 
@@ -1478,19 +1478,19 @@ def run_add_excel():
         log(f"出力ファイル作成中: {output_filename}")
 
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            # シートを書き込み（マスタを一番左にするため順序を変更）
-            master_df.to_excel(writer, sheet_name='マスタ', index=False)
+            # シートを書き込み（マスタを一番右にするため順序を変更）
             detail_df.to_excel(writer, sheet_name='詳細', index=False)
             if retired_df is not None:
                 retired_df.to_excel(writer, sheet_name='退職者', index=False)
             if headcount_df is not None:
                 headcount_df.to_excel(writer, sheet_name='人数集計', index=False)
+            master_df.to_excel(writer, sheet_name='マスタ', index=False)
 
             # 数値列の!マーク警告を解消（数値のみの文字列を数値型に変換）
             workbook = writer.book
 
             # 各シートに対して処理
-            for sheet_name in ['マスタ', '詳細', '退職者', '人数集計']:
+            for sheet_name in ['詳細', '退職者', '人数集計', 'マスタ']:
                 if sheet_name not in workbook.sheetnames:
                     continue
 
